@@ -77,9 +77,11 @@ function render() {
 // ---- onboarding ------------------------------------------------------------
 
 function viewOnboard() {
-  const v = el(`<div class="card">
+  const v = el(`<div class="card hero-card">
+    <img class="brand-logo" src="/caps-logo.png" alt="CAPS bottle-cap logo" width="132" height="132">
     <h1>CAPS Wallet</h1>
-    <p class="muted">Mine it. Own it. Trade it. — a non-custodial wallet. Your keys never leave this device.</p>
+    <p class="catch">Not your keys, not your caps.</p>
+    <p class="muted">A non-custodial wallet for the wasteland — your keys are generated and stored only on this device.</p>
     <div class="row">
       <button class="btn primary" data-act="create">Create new wallet</button>
       <button class="btn" data-act="restore">Restore from seed phrase</button>
@@ -167,8 +169,10 @@ async function finalizeNew(mnemonic, password) {
 // ---- locked ----------------------------------------------------------------
 
 function viewLocked() {
-  const v = el(`<div class="card">
+  const v = el(`<div class="card hero-card">
+    <img class="brand-logo" src="/caps-logo.png" alt="CAPS bottle-cap logo" width="96" height="96">
     <h1>CAPS Wallet</h1>
+    <p class="catch">Welcome back to the wasteland.</p>
     <p class="muted">Enter your password to unlock.</p>
     <div class="field"><input type="password" id="pw" placeholder="password" autocomplete="current-password"></div>
     <div class="row">
@@ -207,7 +211,7 @@ function viewLocked() {
 function viewDashboard() {
   const v = el(`<div class="dash">
     <header>
-      <div class="brand">CAPS <span class="badge">${esc(state.net.name)}</span></div>
+      <div class="brand"><img class="brand-mini" src="/caps-logo.png" alt="" width="26" height="26">CAPS <span class="badge">${esc(state.net.name)}</span></div>
       <button class="btn small" data-act="lock">Lock</button>
     </header>
     <div class="balance">

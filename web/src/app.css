@@ -36,6 +36,15 @@ body {
   box-shadow: 0 10px 40px rgba(0,0,0,.35);
 }
 h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: .5px; }
+
+/* brand logo + catchphrase on onboarding / locked screens */
+.hero-card { text-align: center; }
+.hero-card .row { justify-content: center; }
+.brand-logo { display: block; margin: 2px auto 10px; width: 132px; height: auto; filter: drop-shadow(0 0 18px rgba(232,163,61,.35)); animation: capfloat 6s ease-in-out infinite; }
+@keyframes capfloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+.catch { font-size: 17px; color: var(--amber2); letter-spacing: .3px; margin: 0 0 8px; font-weight: 600; }
+.brand-mini { width: 26px; height: 26px; vertical-align: -7px; margin-right: 7px; filter: drop-shadow(0 0 6px rgba(232,163,61,.4)); }
+@media (prefers-reduced-motion: reduce) { .brand-logo { animation: none; } }
 h2 { font-size: 19px; margin: 0 0 10px; }
 .muted { color: var(--muted); }
 .dim { color: var(--amber); font-weight: 700; }

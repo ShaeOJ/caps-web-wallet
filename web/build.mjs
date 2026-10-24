@@ -5,7 +5,7 @@ const watch = process.argv.includes('--watch');
 mkdirSync('dist', { recursive: true });
 
 // Static assets copied verbatim (served from 'self' under strict CSP).
-for (const f of ['index.html', 'app.css']) cpSync(`src/${f}`, `dist/${f}`);
+for (const f of ['index.html', 'app.css', 'caps-logo.png', 'favicon.png']) cpSync(`src/${f}`, `dist/${f}`);
 
 const opts = {
   entryPoints: ['src/main.js'],

@@ -375,6 +375,9 @@ func isHex(s string) bool {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		// Always revalidate: a wallet must never run stale (possibly pre-audit)
+		// code. Files carry Last-Modified/ETag, so unchanged assets return 304.
+		h.Set("Cache-Control", "no-cache")
 		h.Set("Content-Security-Policy",
 			"default-src 'none'; script-src 'self'; style-src 'self'; "+
 				"img-src 'self' data:; connect-src 'self'; font-src 'self'; "+
