@@ -1,4 +1,5 @@
 import qrcode from 'qrcode-generator';
+import { initBgfx } from './bgfx.js';
 import { NETWORKS } from './caps-net.js';
 import * as api from './api.js';
 import * as store from './store.js';
@@ -384,4 +385,5 @@ function panelHistory() {
   return p;
 }
 
+initBgfx();
 boot();
