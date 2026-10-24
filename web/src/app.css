@@ -119,6 +119,16 @@ ul.hist li { display: flex; justify-content: space-between; padding: 10px 2px; b
 .mono { font-family: ui-monospace, monospace; color: var(--amber); }
 
 .foot { color: var(--muted); font-size: 12px; margin-top: 18px; text-align: center; }
+.foot p { margin: 0; }
+.foot-links {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 8px 20px; margin-bottom: 10px;
+}
+.foot-links a {
+  color: var(--amber); text-decoration: none;
+  font-size: 12.5px; letter-spacing: 1px; text-transform: uppercase;
+}
+.foot-links a:hover { color: var(--amber2); text-decoration: underline; }
 
 .toast { position: fixed; left: 50%; bottom: 26px; translate: -50% 20px; background: #241a0e; border: 1px solid var(--line); color: var(--fg); padding: 11px 16px; border-radius: 10px; opacity: 0; transition: opacity .3s, translate .3s; z-index: 50; max-width: 90vw; }
 .toast.show { opacity: 1; translate: -50% 0; }
