@@ -17,6 +17,21 @@ local `capsd` JSON-RPC and proxies the explorer.
 - Tx build + sign 100% client-side; server only broadcasts the raw hex
 - Strict CSP (`script-src 'self'`, no inline/eval), self-hosted JS, HSTS/TLS
 
+## Verify what you're running
+
+The served bundle is reproducible from this repo. Don't trust it — check it:
+
+```sh
+git clone https://github.com/ShaeOJ/caps-web-wallet && cd caps-web-wallet/web
+npm ci && npm run build          # npm ci enforces package-lock.json exactly
+sha256sum dist/app.js
+curl -s https://wallet.undergroundroots.ca/app.js | sha256sum   # must match
+```
+
+Dependencies are pinned with integrity hashes in `package-lock.json`; always
+build with `npm ci` (never `npm install`) so a rebuild can't silently pull a
+different version of a crypto library.
+
 ## Layout
 
 - `phase0/` — regtest validation harness (de-risk). Proves JS-derived addresses match the
