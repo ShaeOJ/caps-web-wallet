@@ -1,0 +1,12 @@
+{
+  "name": "caps-wallet-phase0",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "dependencies": {
+    "@noble/secp256k1": "^3.2.0",
+    "@scure/bip32": "^2.4.0",
+    "@scure/bip39": "^2.4.0",
+    "@scure/btc-signer": "^2.4.1"
+  }
+}
