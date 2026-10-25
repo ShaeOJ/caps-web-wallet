@@ -114,8 +114,46 @@ ol.seed li span { color: var(--amber); display: inline-block; width: 22px; font-
 .review.ok b { color: var(--ok); font-family: ui-monospace, monospace; font-size: 12px; }
 .review .btn { margin-top: 12px; width: 100%; }
 
+/* ── Transaction history ──────────────────────────────────────────────────
+   Each row says which way value moved, how much, when, and links out to the
+   explorer. Direction is carried by an icon, a label AND colour, so it never
+   depends on colour alone. */
 ul.hist { list-style: none; padding: 0; margin: 0; }
-ul.hist li { display: flex; justify-content: space-between; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
+ul.hist li.h-row {
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 11px 2px; border-bottom: 1px solid var(--line);
+}
+ul.hist li.h-row:last-child { border-bottom: 0; }
+
+.h-icon {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; border: 1px solid var(--line); background: #120d07;
+}
+.h-row.receive .h-icon { color: var(--ok); border-color: rgba(111,207,122,.45); }
+.h-row.send    .h-icon { color: var(--amber2); border-color: rgba(232,163,61,.45); }
+.h-row.self    .h-icon { color: var(--muted); }
+
+.h-mid { flex: 1; min-width: 0; }
+.h-top { display: flex; align-items: baseline; gap: 8px; }
+.h-label { font-weight: 600; font-size: 13.5px; }
+.h-time { color: var(--muted); font-size: 11.5px; }
+.h-peer { color: var(--muted); font-size: 11.5px; margin-top: 2px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-tx { margin-top: 3px; font-size: 11.5px; display: flex; gap: 8px; flex-wrap: wrap; }
+.h-tx a { color: var(--amber); font-family: ui-monospace, Menlo, Consolas, monospace; text-decoration: none; }
+.h-tx a:hover { text-decoration: underline; }
+.h-height { color: var(--muted); }
+
+.h-amt {
+  flex: 0 0 auto; text-align: right; font-weight: 700; font-size: 14px;
+  white-space: nowrap; word-break: normal;
+}
+.h-amt small { font-size: 10px; color: var(--muted); margin-left: 3px; font-weight: 600; }
+.h-amt.receive { color: var(--ok); }
+.h-amt.send    { color: var(--amber2); }
+.h-amt.self    { color: var(--muted); }
+.h-fee { font-size: 10.5px; color: var(--muted); font-weight: 500; margin-top: 2px; }
 .mono { font-family: ui-monospace, monospace; color: var(--amber); }
 
 .foot { color: var(--muted); font-size: 12px; margin-top: 18px; text-align: center; }
@@ -134,3 +172,51 @@ ul.hist li { display: flex; justify-content: space-between; padding: 10px 2px; b
 .toast.show { opacity: 1; translate: -50% 0; }
 .toast.err { border-color: var(--err); color: #ffd7cf; }
 .toast.ok { border-color: var(--ok); color: #d6ffd9; }
+
+/* ── Beta notice modal ────────────────────────────────────────────────────
+   Shown once per browser: the wallet is live on mainnet but still in active
+   development, and the seed phrase is the user's only recovery path. */
+.beta-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(5,4,2,.82);
+  -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
+  opacity: 0; transition: opacity .3s ease;
+}
+.beta-overlay.show { opacity: 1; }
+.beta-box {
+  position: relative; overflow: hidden;
+  width: min(520px,100%); max-height: 88vh; overflow-y: auto;
+  padding: 28px 24px 24px; text-align: center;
+  background: linear-gradient(180deg,#221a0f,#180f07);
+  border: 1px solid var(--amber); border-radius: var(--radius);
+  box-shadow: 0 24px 70px rgba(0,0,0,.7);
+  animation: betaIn .45s cubic-bezier(.2,.7,.3,1) both;
+}
+@keyframes betaIn { from { opacity:0; transform: translateY(14px) scale(.97);} to { opacity:1; transform:none; } }
+.beta-scan { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+.beta-scan::after {
+  content:""; position:absolute; left:0; right:0; height:40%;
+  background: linear-gradient(180deg,transparent,rgba(232,163,61,.07),transparent);
+  animation: betaSweep 3s linear infinite;
+}
+@keyframes betaSweep { from { top:-40%; } to { top:100%; } }
+.beta-eyebrow { font-size:11px; letter-spacing:5px; text-transform:uppercase; color:var(--muted); margin-bottom:14px; }
+.beta-title { font-size:22px; line-height:1.25; color:#fff; letter-spacing:1px; margin-bottom:14px; }
+.beta-lede { font-size:14.5px; color:var(--fg); line-height:1.6; margin-bottom:16px; }
+.beta-lede b { color: var(--amber); }
+.beta-list { list-style:none; padding:0; margin:0 0 18px; text-align:left; font-size:13.5px; line-height:1.55; }
+.beta-list li { position:relative; padding:7px 0 7px 22px; border-bottom:1px solid var(--line); color:var(--muted); }
+.beta-list li:last-child { border-bottom:0; }
+.beta-list li::before { content:"\25B8"; position:absolute; left:4px; color:var(--amber); }
+.beta-list b { color: var(--amber2); }
+.beta-foot { font-size:12.5px; color:var(--amber2); margin-bottom:18px; }
+.beta-btn {
+  width:100%; cursor:pointer; font:inherit; font-size:15px; font-weight:700;
+  letter-spacing:2px; text-transform:uppercase; padding:12px 18px; border-radius:10px;
+  border:1px solid var(--amber);
+  background: linear-gradient(180deg,var(--amber2),var(--amber)); color:#1a1205;
+}
+.beta-btn:hover { box-shadow: 0 0 22px rgba(232,163,61,.45); }
+.beta-btn:focus-visible { outline:2px solid var(--amber2); outline-offset:2px; }
+@media (prefers-reduced-motion: reduce) { .beta-box, .beta-scan::after { animation:none; } }

@@ -19,8 +19,11 @@ export async function getFeerate() {
   return get('/api/feerate');
 }
 
-export async function getHistory(address) {
-  return get('/api/history?address=' + encodeURIComponent(address));
+// History for the whole wallet, not just one address — the server resolves each
+// transaction's direction and amount so the client never has to fan out.
+export async function getHistory(addresses) {
+  const list = Array.isArray(addresses) ? addresses : [addresses];
+  return get('/api/history?addresses=' + encodeURIComponent(list.join(',')));
 }
 
 export async function broadcast(hex) {

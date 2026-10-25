@@ -12,7 +12,8 @@
 //	CAPS_RPC_URL   http://127.0.0.1:13667
 //	CAPS_RPC_USER  rt
 //	CAPS_RPC_PASS  rt
-//	EXPLORER_URL   https://caps.undergroundroots.ca   (eiquidus; "" disables /history)
+//	EXPLORER_URL          http://127.0.0.1:3001  (eiquidus; "" disables /history)
+//	EXPLORER_PUBLIC_URL   https://caps.undergroundroots.ca (used for browser links)
 //	WEB_DIR        ../web/dist                        ("" disables static serving)
 //	LISTEN_ADDR    127.0.0.1:8470
 //	NETWORK        regtest | main                     (reported to the client)
@@ -26,9 +27,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +40,7 @@ import (
 type config struct {
 	rpcURL, rpcUser, rpcPass string
 	explorerURL              string
+	explorerPublicURL        string
 	webDir                   string
 	listenAddr               string
 	network                  string
@@ -55,9 +59,12 @@ func loadConfig() config {
 		rpcUser:     envOr("CAPS_RPC_USER", "rt"),
 		rpcPass:     envOr("CAPS_RPC_PASS", "rt"),
 		explorerURL: strings.TrimRight(envOr("EXPLORER_URL", ""), "/"),
-		webDir:      envOr("WEB_DIR", ""),
-		listenAddr:  envOr("LISTEN_ADDR", "127.0.0.1:8470"),
-		network:     envOr("NETWORK", "regtest"),
+		// The browser cannot reach EXPLORER_URL when it is a loopback address,
+		// so links out are built from the public one.
+		explorerPublicURL: strings.TrimRight(envOr("EXPLORER_PUBLIC_URL", "https://caps.undergroundroots.ca"), "/"),
+		webDir:            envOr("WEB_DIR", ""),
+		listenAddr:        envOr("LISTEN_ADDR", "127.0.0.1:8470"),
+		network:           envOr("NETWORK", "regtest"),
 	}
 }
 
@@ -334,27 +341,188 @@ func (s *server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"txid": txid})
 }
 
+// explorerGet fetches and decodes a JSON document from the explorer.
+func (s *server) explorerGet(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.explorerURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := rpcClient.Do(req)
+	if err != nil {
+		return errors.New("explorer unreachable")
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("explorer returned %d", resp.StatusCode)
+	}
+	return json.Unmarshal(body, out)
+}
+
+// historyEntry is one transaction as the wallet wants to display it: which way
+// the value moved for *this* wallet, how much, and enough context to link out.
+type historyEntry struct {
+	TxID      string  `json:"txid"`
+	Direction string  `json:"direction"` // "receive" | "send" | "self"
+	Amount    float64 `json:"amount"`    // CAPS, net change across the wallet's addresses
+	Fee       float64 `json:"fee"`       // CAPS, only meaningful on sends we fully fund
+	Height    int64   `json:"height"`
+	Timestamp int64   `json:"timestamp"`
+	Coinbase  bool    `json:"coinbase"`
+	Peer      string  `json:"peer"` // counterparty address, best effort
+}
+
+// maxHistoryTxs caps how many transactions we enrich per request. Each one is a
+// separate explorer round-trip, so this bounds both latency and load on the
+// explorer — which runs on the same box as the node and the wallet backend.
+const maxHistoryTxs = 40
+
+// sats parses an explorer amount. They arrive as strings holding a satoshi
+// count, sometimes with a trailing ".00000000"; an unparseable one counts as 0
+// rather than failing the whole transaction.
+func sats(v string) float64 {
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0
+	}
+	return f
+}
+
+// caps converts satoshis to CAPS, rounded to the 8 decimals the chain uses so
+// float division cannot leak 0.30000000000000004 into the JSON.
+func caps(s float64) float64 {
+	return math.Round(s) / 1e8
+}
+
+// handleHistory returns decoded, direction-aware history for the caller's
+// addresses. The raw explorer feed is not enough on its own: its per-address
+// list reports a "type" of vin/vout but no amount, and names the txid field
+// "addresses", so the client cannot tell a send from a receive or say how much
+// moved. Resolving that here keeps the key-handling client simple and means one
+// request instead of N+1 from the browser.
 func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.explorerURL == "" {
 		writeErr(w, http.StatusNotImplemented, "explorer not configured")
 		return
 	}
-	addr := r.URL.Query().Get("address")
-	if !validAddr(addr) {
-		writeErr(w, http.StatusBadRequest, "invalid address")
+	addrs, ok := parseAddrs(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "invalid or missing address(es)")
 		return
 	}
-	url := s.cfg.explorerURL + "/ext/getaddress/" + addr
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
-	resp, err := rpcClient.Do(req)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "explorer unreachable")
-		return
+	mine := make(map[string]bool, len(addrs))
+	for _, a := range addrs {
+		mine[a] = true
 	}
-	defer resp.Body.Close()
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, 4<<20))
+
+	// Collect candidate txids across every address the wallet owns, newest
+	// first. The explorer returns each address's list newest-first already.
+	var order []string
+	seen := map[string]bool{}
+	for _, a := range addrs {
+		var ar struct {
+			LastTxs []struct {
+				Addresses string `json:"addresses"` // actually the txid
+			} `json:"last_txs"`
+		}
+		if err := s.explorerGet(r.Context(), "/ext/getaddress/"+a, &ar); err != nil {
+			continue // an address with no history 404s; that is not fatal
+		}
+		for _, t := range ar.LastTxs {
+			if t.Addresses != "" && !seen[t.Addresses] {
+				seen[t.Addresses] = true
+				order = append(order, t.Addresses)
+			}
+		}
+	}
+	if len(order) > maxHistoryTxs {
+		order = order[:maxHistoryTxs]
+	}
+
+	out := make([]historyEntry, 0, len(order))
+	for _, txid := range order {
+		// Two shapes to respect here, both easy to get wrong silently:
+		// gettx nests the transaction under a "tx" key, and every amount is a
+		// JSON *string*. Decoding a flat struct, or an amount as a number,
+		// yields zeroes with no error at all.
+		var resp struct {
+			Tx struct {
+				TxID string `json:"txid"`
+				Vin  []struct {
+					Addresses string `json:"addresses"`
+					Amount    string `json:"amount"`
+				} `json:"vin"`
+				Vout []struct {
+					Addresses string `json:"addresses"`
+					Amount    string `json:"amount"`
+				} `json:"vout"`
+				Timestamp  int64 `json:"timestamp"`
+				BlockIndex int64 `json:"blockindex"`
+			} `json:"tx"`
+		}
+		if err := s.explorerGet(r.Context(), "/ext/gettx/"+txid, &resp); err != nil {
+			continue
+		}
+		tx := resp.Tx
+
+		// Explorer amounts are satoshis (despite the decimal formatting).
+		var inMine, outMine, inTotal, outTotal float64
+		coinbase := false
+		peerIn, peerOut := "", ""
+		for _, v := range tx.Vin {
+			amt := sats(v.Amount)
+			inTotal += amt
+			if v.Addresses == "coinbase" {
+				coinbase = true
+			}
+			if mine[v.Addresses] {
+				inMine += amt
+			} else if peerIn == "" {
+				peerIn = v.Addresses
+			}
+		}
+		for _, v := range tx.Vout {
+			amt := sats(v.Amount)
+			outTotal += amt
+			if mine[v.Addresses] {
+				outMine += amt
+			} else if peerOut == "" {
+				peerOut = v.Addresses
+			}
+		}
+
+		e := historyEntry{
+			TxID: txid, Height: tx.BlockIndex, Timestamp: tx.Timestamp, Coinbase: coinbase,
+		}
+		net := outMine - inMine // >0 the wallet gained, <0 it spent
+		switch {
+		case inMine == 0:
+			e.Direction, e.Amount, e.Peer = "receive", caps(outMine), peerIn
+		case net > 0:
+			e.Direction, e.Amount, e.Peer = "receive", caps(net), peerIn
+		case net < 0:
+			e.Direction, e.Amount, e.Peer = "send", caps(-net), peerOut
+			// Fee is only knowable when the wallet funded every input.
+			if inMine == inTotal && !coinbase {
+				e.Fee = caps(inTotal - outTotal)
+				// What the recipient got; the fee is listed separately. Round
+				// again so the subtraction cannot reintroduce float noise.
+				e.Amount = caps(-net - (inTotal - outTotal))
+			}
+		default:
+			// Everything came back to the wallet: a consolidation or self-send.
+			e.Direction, e.Amount = "self", caps(outMine)
+			if inMine == inTotal && !coinbase {
+				e.Fee = caps(inTotal - outTotal)
+			}
+		}
+		out = append(out, e)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"txs":         out,
+		"explorerUrl": s.cfg.explorerPublicURL,
+	})
 }
 
 func (s *server) handleNetwork(w http.ResponseWriter, r *http.Request) {

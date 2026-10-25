@@ -1,5 +1,6 @@
 import qrcode from 'qrcode-generator';
 import { initBgfx } from './bgfx.js';
+import { initBetaNotice } from './beta-notice.js';
 import { NETWORKS } from './caps-net.js';
 import * as api from './api.js';
 import * as store from './store.js';
@@ -366,18 +367,59 @@ async function doSend(p, btn) {
   }
 }
 
+// "3 minutes ago" / "2 days ago" — absolute timestamps are in the title.
+function timeAgo(unixSec) {
+  if (!unixSec) return 'pending';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - unixSec));
+  if (s < 60) return 'just now';
+  const units = [['d', 86400], ['h', 3600], ['m', 60]];
+  for (const [label, size] of units) {
+    if (s >= size) return `${Math.floor(s / size)}${label} ago`;
+  }
+  return 'just now';
+}
+
 function panelHistory() {
   const p = el(`<div class="panel"><p class="muted">Loading history…</p></div>`);
   (async () => {
     try {
-      const addr = currentReceiveAddr();
-      const h = await api.getHistory(addr);
-      const txs = (h.last_txs || h.txs || []);
-      if (!txs.length) { p.replaceChildren(el('<div class="panel"><p class="muted">No transactions for this address yet.</p></div>')); return; }
-      const rows = txs.slice(0, 25).map((t) => `<li><a class="mono" title="${esc(t.addresses || t.txid || '')}">${esc((t.addresses || t.txid || '').slice(0, 20))}…</a>
-        <span>${esc(satsToCaps(BigInt(Math.round((t.amount || 0)))))}</span></li>`).join('');
+      // Whole wallet, not just the address currently on the Receive tab —
+      // otherwise change and older receive addresses are invisible.
+      const h = await api.getHistory(state.session.wallet.allAddresses);
+      const txs = h.txs || [];
+      if (!txs.length) {
+        p.replaceChildren(el('<div class="panel"><p class="muted">No transactions yet. Mine some CAPS or receive a payment and it will show up here.</p></div>'));
+        return;
+      }
+      const base = h.explorerUrl || '';
+      const rows = txs.map((t) => {
+        const recv = t.direction === 'receive';
+        const self = t.direction === 'self';
+        const label = t.coinbase ? 'Mined' : self ? 'Sent to self' : recv ? 'Received' : 'Sent';
+        const sign = self ? '' : recv ? '+' : '−';
+        const when = timeAgo(t.timestamp);
+        const whenTitle = t.timestamp ? new Date(t.timestamp * 1000).toLocaleString() : '';
+        const link = base ? `${base}/tx/${encodeURIComponent(t.txid)}` : '';
+        const feeLine = t.fee > 0 ? `<div class="h-fee">fee ${esc(String(t.fee))} CAPS</div>` : '';
+        const peer = t.peer && !t.coinbase
+          ? `<div class="h-peer" title="${esc(t.peer)}">${recv ? 'from' : 'to'} ${esc(t.peer.slice(0, 12))}…${esc(t.peer.slice(-6))}</div>`
+          : (t.coinbase ? '<div class="h-peer">block reward</div>' : '');
+        return `<li class="h-row ${esc(t.direction)}">
+          <div class="h-icon" aria-hidden="true">${t.coinbase ? '⛏' : recv ? '↓' : self ? '↻' : '↑'}</div>
+          <div class="h-mid">
+            <div class="h-top"><span class="h-label">${esc(label)}</span>
+              <span class="h-time" title="${esc(whenTitle)}">${esc(when)}</span></div>
+            ${peer}
+            <div class="h-tx">${link
+              ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(t.txid.slice(0, 10))}…${esc(t.txid.slice(-8))} ↗</a>`
+              : `<span class="mono">${esc(t.txid.slice(0, 10))}…</span>`}
+              ${t.height ? `<span class="h-height">block ${esc(String(t.height))}</span>` : ''}</div>
+          </div>
+          <div class="h-amt ${esc(t.direction)}">${sign}${esc(String(t.amount))}<small>CAPS</small>${feeLine}</div>
+        </li>`;
+      }).join('');
       p.replaceChildren(el(`<div class="panel"><ul class="hist">${rows}</ul>
-        <p class="muted">Showing activity for the current receive address.</p></div>`));
+        <p class="muted">Across all ${state.session.wallet.allAddresses.length} wallet addresses. Tap a transaction to open it in the explorer.</p></div>`));
     } catch (e) {
       p.replaceChildren(el(`<div class="panel"><p class="muted">History unavailable (${esc(e.message)}).</p></div>`));
     }
@@ -386,4 +428,5 @@ function panelHistory() {
 }
 
 initBgfx();
+initBetaNotice();
 boot();
