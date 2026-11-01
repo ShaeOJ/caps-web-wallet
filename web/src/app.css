@@ -168,6 +168,38 @@ ul.hist li.h-row:last-child { border-bottom: 0; }
 .h-row.pending .h-icon { color: var(--amber2); border-color: rgba(232,163,61,.45); }
 .pending-badge { color: var(--amber2); font-weight: 600; }
 
+/* ── Address book ──────────────────────────────────────────────────────────
+   Saved-recipient chips on Send, the post-send save prompt, and the Addresses
+   tab list. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip {
+  background: #241a0e; border: 1px solid var(--line); color: var(--amber2);
+  border-radius: 20px; padding: 4px 11px; font: inherit; font-size: 12px;
+  font-weight: 600; cursor: pointer; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip:hover { border-color: var(--amber); }
+
+.save-contact { display: flex; gap: 8px; margin: 12px 0 2px; }
+.save-label { flex: 1; min-width: 0; }
+.save-contact .btn { flex: 0 0 auto; }
+
+.abook { list-style: none; padding: 0; margin: 0; }
+.ab-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 2px; border-bottom: 1px solid var(--line);
+}
+.ab-row:last-child { border-bottom: 0; }
+.ab-mid { flex: 1; min-width: 0; }
+.ab-label { font-weight: 600; font-size: 14px; color: var(--amber2); }
+.ab-addr { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ab-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.ab-empty { padding: 16px 2px; list-style: none; font-size: 13px; }
+.ab-add { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.ab-add .btn.primary { width: 100%; margin-top: 12px; }
+.btn.danger { color: var(--err); }
+.btn.danger:hover { border-color: var(--err); }
+
 .foot { color: var(--muted); font-size: 12px; margin-top: 18px; text-align: center; }
 .foot p { margin: 0; }
 .foot-links {

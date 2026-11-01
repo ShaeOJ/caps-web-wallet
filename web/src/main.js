@@ -24,6 +24,7 @@ const state = {
   // so we surface these optimistically until they show up confirmed.
   pending: [],      // [{ txid, toAddr, amountCaps, feeCaps, at(unixSec) }]
   explorerUrl: '',  // public explorer base, learned from the history response
+  contacts: [],     // address book: [{ address, label, created }]
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -70,7 +71,35 @@ async function boot() {
     state.net = NETWORKS.main;
   }
   state.vault = await store.loadVault();
+  state.contacts = await store.loadAddressBook();
   render();
+}
+
+// ---- address book ----------------------------------------------------------
+
+function contactFor(addr) {
+  return state.contacts.find((c) => c.address === addr);
+}
+
+// A recipient shown as its label when saved, else a truncated address.
+function addrLabel(addr) {
+  const c = contactFor(addr);
+  if (c) return esc(c.label);
+  return `${esc(addr.slice(0, 10))}…${esc(addr.slice(-8))}`;
+}
+
+async function saveContact(address, label) {
+  address = address.trim();
+  label = (label || '').trim() || 'Unnamed';
+  const existing = contactFor(address);
+  if (existing) { existing.label = label; }
+  else { state.contacts.unshift({ address, label, created: Date.now() }); }
+  await store.saveAddressBook(state.contacts);
+}
+
+async function deleteContact(address) {
+  state.contacts = state.contacts.filter((c) => c.address !== address);
+  await store.saveAddressBook(state.contacts);
 }
 
 function render() {
@@ -229,6 +258,7 @@ function viewDashboard() {
       <button class="tab active" data-tab="receive">Receive</button>
       <button class="tab" data-tab="send">Send</button>
       <button class="tab" data-tab="history">History</button>
+      <button class="tab" data-tab="addresses">Addresses</button>
     </nav>
     <div id="panel"></div>
   </div>`);
@@ -263,6 +293,7 @@ function showPanel(tab) {
   if (tab === 'receive') p.replaceChildren(panelReceive());
   if (tab === 'send') p.replaceChildren(panelSend());
   if (tab === 'history') p.replaceChildren(panelHistory());
+  if (tab === 'addresses') p.replaceChildren(panelAddresses());
 }
 
 function currentReceiveAddr() {
@@ -294,9 +325,15 @@ function panelReceive() {
 }
 
 function panelSend() {
+  const chips = state.contacts.length
+    ? `<div class="chips" aria-label="Saved addresses">${state.contacts
+        .map((c) => `<button class="chip" data-addr="${esc(c.address)}" title="${esc(c.address)}">${esc(c.label)}</button>`)
+        .join('')}</div>`
+    : '';
   const p = el(`<div class="panel">
     <div class="field"><label>Recipient address</label>
-      <input id="to" placeholder="${esc(state.net.bech32)}1…" autocomplete="off" spellcheck="false"></div>
+      <input id="to" placeholder="${esc(state.net.bech32)}1…" autocomplete="off" spellcheck="false">
+      ${chips}</div>
     <div class="field"><label>Amount (CAPS)</label>
       <input id="amt" inputmode="decimal" placeholder="0.00000000"></div>
     <div class="row">
@@ -307,16 +344,30 @@ function panelSend() {
   </div>`);
   p.addEventListener('click', async (e) => {
     const a = e.target.dataset.act;
+    if (e.target.dataset.addr) { $('#to', p).value = e.target.dataset.addr; return; }
     if (a === 'max') {
       p.dataset.sendmax = '1';
       $('#amt', p).value = satsToCaps(state.balanceSats);
     }
     if (a === 'review') await doReview(p);
     if (a === 'confirm') await doSend(p, e.target);
+    if (a === 'save-recipient') await saveRecipientFromSend(p);
   });
   // editing the amount cancels send-max mode
   p.addEventListener('input', (e) => { if (e.target.id === 'amt') delete p.dataset.sendmax; });
   return p;
+}
+
+// Called from the post-send card: saves the just-sent recipient with a label.
+async function saveRecipientFromSend(p) {
+  const wrap = $('#save-contact', p);
+  if (!wrap) return;
+  const addr = wrap.dataset.addr;
+  const label = $('#save-label', p).value.trim();
+  if (!label) return toast('Enter a name for this address', 'err');
+  await saveContact(addr, label);
+  toast('Saved to address book', 'ok');
+  wrap.replaceChildren(el(`<p class="muted">Saved as “${esc(label)}”.</p>`));
 }
 
 function looksLikeAddr(a) {
@@ -347,7 +398,7 @@ async function doReview(p) {
 
   const rv = $('#review', p);
   rv.replaceChildren(el(`<div class="review">
-    <div class="line"><span>To</span><b>${esc(to.slice(0, 10))}…${esc(to.slice(-8))}</b></div>
+    <div class="line"><span>To</span><b>${addrLabel(to)}</b></div>
     <div class="line"><span>Amount</span><b>${esc(satsToCaps(built.sendSats))} CAPS</b></div>
     <div class="line"><span>Network fee</span><b>${esc(satsToCaps(built.fee))} CAPS</b></div>
     <div class="line"><span>Inputs</span><b>${built.inputs}</b></div>
@@ -372,12 +423,17 @@ async function doSend(p, btn) {
     // Remember it so History shows it as pending until the explorer sees it mined.
     state.pending.unshift({ txid, toAddr, amountCaps, feeCaps, at: Math.floor(Date.now() / 1000) });
     toast('Sent! Awaiting confirmation', 'ok');
+    const saveForm = contactFor(toAddr) ? '' : `<div id="save-contact" data-addr="${esc(toAddr)}" class="save-contact">
+        <input id="save-label" class="save-label" placeholder="Save this address as…" autocomplete="off" maxlength="40">
+        <button class="btn small" data-act="save-recipient">Save</button>
+      </div>`;
     rv.replaceChildren(el(`<div class="review pending-card">
       <div class="pc-head"><span class="pc-spin" aria-hidden="true">◴</span> Sent — awaiting confirmation</div>
       <div class="line"><span>Amount</span><b>${esc(amountCaps)} CAPS</b></div>
-      <div class="line"><span>To</span><b>${esc(toAddr.slice(0, 10))}…${esc(toAddr.slice(-8))}</b></div>
+      <div class="line"><span>To</span><b>${addrLabel(toAddr)}</b></div>
       <div class="line"><span>Network fee</span><b>${esc(feeCaps)} CAPS</b></div>
       <div class="line"><span>Transaction</span><span class="pc-tx">${txidHtml(txid)}</span></div>
+      ${saveForm}
       <p class="muted pc-eta">CAPS blocks target <b>~5 minutes</b>. Your balance updates and this moves to History once it's mined — you can safely leave this page.</p>
     </div>`));
     $('#to', p).value = ''; $('#amt', p).value = '';
@@ -412,7 +468,7 @@ function txidHtml(txid) {
 // A just-broadcast send, shown in History until the explorer reports it confirmed.
 function renderPendingRow(pt) {
   const to = pt.toAddr
-    ? `<div class="h-peer" title="${esc(pt.toAddr)}">to ${esc(pt.toAddr.slice(0, 12))}…${esc(pt.toAddr.slice(-6))}</div>`
+    ? `<div class="h-peer" title="${esc(pt.toAddr)}">to ${addrLabel(pt.toAddr)}</div>`
     : '';
   return `<li class="h-row send pending">
     <div class="h-icon" aria-hidden="true">◴</div>
@@ -451,7 +507,7 @@ function panelHistory() {
         const link = base ? `${base}/tx/${encodeURIComponent(t.txid)}` : '';
         const feeLine = t.fee > 0 ? `<div class="h-fee">fee ${esc(String(t.fee))} CAPS</div>` : '';
         const peer = t.peer && !t.coinbase
-          ? `<div class="h-peer" title="${esc(t.peer)}">${recv ? 'from' : 'to'} ${esc(t.peer.slice(0, 12))}…${esc(t.peer.slice(-6))}</div>`
+          ? `<div class="h-peer" title="${esc(t.peer)}">${recv ? 'from' : 'to'} ${addrLabel(t.peer)}</div>`
           : (t.coinbase ? '<div class="h-peer">block reward</div>' : '');
         return `<li class="h-row ${esc(t.direction)}">
           <div class="h-icon" aria-hidden="true">${t.coinbase ? '⛏' : recv ? '↓' : self ? '↻' : '↑'}</div>
@@ -477,6 +533,54 @@ function panelHistory() {
       p.replaceChildren(el(`<div class="panel"><p class="muted">History unavailable (${esc(e.message)}).</p></div>`));
     }
   })();
+  return p;
+}
+
+function panelAddresses() {
+  const rows = state.contacts.length
+    ? state.contacts.map((c) => `<li class="ab-row" data-addr="${esc(c.address)}">
+        <div class="ab-mid">
+          <div class="ab-label">${esc(c.label)}</div>
+          <div class="ab-addr mono" title="${esc(c.address)}">${esc(c.address.slice(0, 14))}…${esc(c.address.slice(-10))}</div>
+        </div>
+        <div class="ab-actions">
+          <button class="btn small" data-act="ab-send">Send</button>
+          <button class="btn small" data-act="ab-copy">Copy</button>
+          <button class="btn small danger" data-act="ab-del">Delete</button>
+        </div>
+      </li>`).join('')
+    : '<li class="ab-empty muted">No saved addresses yet. Add one below, or save a recipient after you send.</li>';
+  const p = el(`<div class="panel">
+    <ul class="abook">${rows}</ul>
+    <div class="ab-add">
+      <div class="field"><label>New address</label>
+        <input id="ab-new-addr" placeholder="${esc(state.net.bech32)}1…" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label>Name / tag</label>
+        <input id="ab-new-label" placeholder="e.g. Cold storage" autocomplete="off" maxlength="40"></div>
+      <button class="btn primary" data-act="ab-add">Add to address book</button>
+    </div>
+  </div>`);
+  p.addEventListener('click', async (e) => {
+    const a = e.target.dataset.act;
+    const row = e.target.closest('.ab-row');
+    const addr = row && row.dataset.addr;
+    if (a === 'ab-add') {
+      const na = $('#ab-new-addr', p).value.trim();
+      const nl = $('#ab-new-label', p).value.trim();
+      if (!looksLikeAddr(na)) return toast('That does not look like a CAPS address', 'err');
+      if (!nl) return toast('Give the address a name', 'err');
+      await saveContact(na, nl);
+      toast('Added to address book', 'ok');
+      showPanel('addresses');
+    }
+    if (a === 'ab-copy' && addr) { await navigator.clipboard.writeText(addr).catch(() => {}); toast('Address copied'); }
+    if (a === 'ab-del' && addr) { await deleteContact(addr); toast('Removed'); showPanel('addresses'); }
+    if (a === 'ab-send' && addr) {
+      const sendTab = document.querySelector('.tab[data-tab="send"]');
+      if (sendTab) sendTab.click();
+      queueMicrotask(() => { const to = $('#to'); if (to) to.value = addr; });
+    }
+  });
   return p;
 }
 

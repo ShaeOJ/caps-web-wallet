@@ -40,3 +40,16 @@ export async function clearVault() {
 export async function hasVault() {
   return !!(await loadVault());
 }
+
+// Address book — saved recipient addresses with user labels. Addresses are
+// public data, so this is stored as plaintext (unlike the vault) in the same
+// object store under its own key. Shape: [{ address, label, created }].
+const ABOOK_KEY = 'addressbook';
+
+export async function loadAddressBook() {
+  return (await tx('readonly', (s) => s.get(ABOOK_KEY))) || [];
+}
+
+export async function saveAddressBook(list) {
+  await tx('readwrite', (s) => s.put(list, ABOOK_KEY));
+}
