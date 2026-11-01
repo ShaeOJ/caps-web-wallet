@@ -19,6 +19,11 @@ const state = {
   balanceSats: 0n,
   recvIndex: 0,
   idleTimer: null,
+  // Sends we broadcast this session but have not yet seen confirmed. The explorer
+  // (and thus History/balance) only sees a tx once it's mined (~1 CAPS block),
+  // so we surface these optimistically until they show up confirmed.
+  pending: [],      // [{ txid, toAddr, amountCaps, feeCaps, at(unixSec) }]
+  explorerUrl: '',  // public explorer base, learned from the history response
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -349,18 +354,34 @@ async function doReview(p) {
     <button class="btn primary" data-act="confirm">Confirm & send</button>
   </div>`));
   rv.dataset.hex = built.hex;
+  rv.dataset.to = to;
+  rv.dataset.sendcaps = satsToCaps(built.sendSats);
+  rv.dataset.feecaps = satsToCaps(built.fee);
 }
 
 async function doSend(p, btn) {
-  const hex = $('#review', p).dataset.hex;
+  const rv = $('#review', p);
+  const hex = rv.dataset.hex;
   if (!hex) return;
   btn.disabled = true; btn.textContent = 'Broadcasting…';
   try {
     const { txid } = await api.broadcast(hex);
-    toast('Sent! txid ' + txid.slice(0, 12) + '…', 'ok');
-    $('#review', p).replaceChildren(el(`<div class="review ok">
-      <div class="line"><span>Broadcast</span><b>${esc(txid)}</b></div></div>`));
+    const amountCaps = rv.dataset.sendcaps || '';
+    const feeCaps = rv.dataset.feecaps || '';
+    const toAddr = rv.dataset.to || '';
+    // Remember it so History shows it as pending until the explorer sees it mined.
+    state.pending.unshift({ txid, toAddr, amountCaps, feeCaps, at: Math.floor(Date.now() / 1000) });
+    toast('Sent! Awaiting confirmation', 'ok');
+    rv.replaceChildren(el(`<div class="review pending-card">
+      <div class="pc-head"><span class="pc-spin" aria-hidden="true">◴</span> Sent — awaiting confirmation</div>
+      <div class="line"><span>Amount</span><b>${esc(amountCaps)} CAPS</b></div>
+      <div class="line"><span>To</span><b>${esc(toAddr.slice(0, 10))}…${esc(toAddr.slice(-8))}</b></div>
+      <div class="line"><span>Network fee</span><b>${esc(feeCaps)} CAPS</b></div>
+      <div class="line"><span>Transaction</span><span class="pc-tx">${txidHtml(txid)}</span></div>
+      <p class="muted pc-eta">CAPS blocks target <b>~5 minutes</b>. Your balance updates and this moves to History once it's mined — you can safely leave this page.</p>
+    </div>`));
     $('#to', p).value = ''; $('#amt', p).value = '';
+    delete p.dataset.sendmax;
     setTimeout(refresh, 800);
   } catch (e) {
     toast(e.message, 'err'); btn.disabled = false; btn.textContent = 'Confirm & send';
@@ -379,6 +400,33 @@ function timeAgo(unixSec) {
   return 'just now';
 }
 
+// A txid as an explorer link when we know the public base, else plain monospace.
+function txidHtml(txid) {
+  const label = `${esc(txid.slice(0, 10))}…${esc(txid.slice(-8))}`;
+  const base = state.explorerUrl;
+  return base
+    ? `<a href="${esc(base)}/tx/${encodeURIComponent(txid)}" target="_blank" rel="noopener">${label} ↗</a>`
+    : `<span class="mono">${label}</span>`;
+}
+
+// A just-broadcast send, shown in History until the explorer reports it confirmed.
+function renderPendingRow(pt) {
+  const to = pt.toAddr
+    ? `<div class="h-peer" title="${esc(pt.toAddr)}">to ${esc(pt.toAddr.slice(0, 12))}…${esc(pt.toAddr.slice(-6))}</div>`
+    : '';
+  return `<li class="h-row send pending">
+    <div class="h-icon" aria-hidden="true">◴</div>
+    <div class="h-mid">
+      <div class="h-top"><span class="h-label">Sending</span>
+        <span class="h-time pending-badge">pending · ~5 min</span></div>
+      ${to}
+      <div class="h-tx">${txidHtml(pt.txid)}</div>
+    </div>
+    <div class="h-amt send">−${esc(pt.amountCaps)}<small>CAPS</small>
+      <div class="h-fee">awaiting confirmation</div></div>
+  </li>`;
+}
+
 function panelHistory() {
   const p = el(`<div class="panel"><p class="muted">Loading history…</p></div>`);
   (async () => {
@@ -386,12 +434,13 @@ function panelHistory() {
       // Whole wallet, not just the address currently on the Receive tab —
       // otherwise change and older receive addresses are invisible.
       const h = await api.getHistory(state.session.wallet.allAddresses);
+      state.explorerUrl = h.explorerUrl || state.explorerUrl;
       const txs = h.txs || [];
-      if (!txs.length) {
-        p.replaceChildren(el('<div class="panel"><p class="muted">No transactions yet. Mine some CAPS or receive a payment and it will show up here.</p></div>'));
-        return;
-      }
-      const base = h.explorerUrl || '';
+      // A pending send that now appears in confirmed history can be retired.
+      const confirmed = new Set(txs.map((t) => t.txid));
+      state.pending = state.pending.filter((pt) => !confirmed.has(pt.txid));
+      const pendingRows = state.pending.map(renderPendingRow).join('');
+      const base = state.explorerUrl || '';
       const rows = txs.map((t) => {
         const recv = t.direction === 'receive';
         const self = t.direction === 'self';
@@ -418,7 +467,11 @@ function panelHistory() {
           <div class="h-amt ${esc(t.direction)}">${sign}${esc(String(t.amount))}<small>CAPS</small>${feeLine}</div>
         </li>`;
       }).join('');
-      p.replaceChildren(el(`<div class="panel"><ul class="hist">${rows}</ul>
+      if (!pendingRows && !rows) {
+        p.replaceChildren(el('<div class="panel"><p class="muted">No transactions yet. Mine some CAPS or receive a payment and it will show up here.</p></div>'));
+        return;
+      }
+      p.replaceChildren(el(`<div class="panel"><ul class="hist">${pendingRows}${rows}</ul>
         <p class="muted">Across all ${state.session.wallet.allAddresses.length} wallet addresses. Tap a transaction to open it in the explorer.</p></div>`));
     } catch (e) {
       p.replaceChildren(el(`<div class="panel"><p class="muted">History unavailable (${esc(e.message)}).</p></div>`));

@@ -156,6 +156,18 @@ ul.hist li.h-row:last-child { border-bottom: 0; }
 .h-fee { font-size: 10.5px; color: var(--muted); font-weight: 500; margin-top: 2px; }
 .mono { font-family: ui-monospace, monospace; color: var(--amber); }
 
+/* Pending (unconfirmed) send feedback — the card under Send and the row in History. */
+.pc-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--amber2); margin-bottom: 6px; }
+.pc-tx { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; text-align: right; max-width: 70%; word-break: break-all; }
+.pc-tx a { color: var(--amber); text-decoration: none; }
+.pc-tx a:hover { text-decoration: underline; }
+.pc-eta { margin-top: 10px; font-size: 12px; line-height: 1.5; }
+.pc-spin, .h-row.pending .h-icon { display: inline-flex; animation: capspin 1.6s linear infinite; }
+@keyframes capspin { to { transform: rotate(360deg); } }
+.h-row.pending { opacity: .92; }
+.h-row.pending .h-icon { color: var(--amber2); border-color: rgba(232,163,61,.45); }
+.pending-badge { color: var(--amber2); font-weight: 600; }
+
 .foot { color: var(--muted); font-size: 12px; margin-top: 18px; text-align: center; }
 .foot p { margin: 0; }
 .foot-links {
