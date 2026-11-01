@@ -264,3 +264,7 @@ ul.hist li.h-row:last-child { border-bottom: 0; }
 .beta-btn:hover { box-shadow: 0 0 22px rgba(232,163,61,.45); }
 .beta-btn:focus-visible { outline:2px solid var(--amber2); outline-offset:2px; }
 @media (prefers-reduced-motion: reduce) { .beta-box, .beta-scan::after { animation:none; } }
+
+/* rebrand transition note */
+.rebrand-note{max-width:52ch;margin:10px auto 0;font-size:12px;line-height:1.45;opacity:.72}
+.rebrand-note b{opacity:.96}

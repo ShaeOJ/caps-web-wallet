@@ -20,7 +20,7 @@ const state = {
   recvIndex: 0,
   idleTimer: null,
   // Sends we broadcast this session but have not yet seen confirmed. The explorer
-  // (and thus History/balance) only sees a tx once it's mined (~1 CAPS block),
+  // (and thus History/balance) only sees a tx once it's mined (~1 BTLCAP block),
   // so we surface these optimistically until they show up confirmed.
   pending: [],      // [{ txid, toAddr, amountCaps, feeCaps, at(unixSec) }]
   explorerUrl: '',  // public explorer base, learned from the history response
@@ -114,8 +114,8 @@ function render() {
 
 function viewOnboard() {
   const v = el(`<div class="card hero-card">
-    <img class="brand-logo" src="/caps-logo.png" alt="CAPS bottle-cap logo" width="132" height="132">
-    <h1>CAPS Wallet</h1>
+    <img class="brand-logo" src="/caps-logo.png" alt="BTLCAP bottle-cap logo" width="132" height="132">
+    <h1>BTLCAP Wallet</h1>
     <p class="catch">Not your keys, not your caps.</p>
     <p class="muted">A non-custodial wallet for the wasteland — your keys are generated and stored only on this device.</p>
     <div class="row">
@@ -206,8 +206,8 @@ async function finalizeNew(mnemonic, password) {
 
 function viewLocked() {
   const v = el(`<div class="card hero-card">
-    <img class="brand-logo" src="/caps-logo.png" alt="CAPS bottle-cap logo" width="96" height="96">
-    <h1>CAPS Wallet</h1>
+    <img class="brand-logo" src="/caps-logo.png" alt="BTLCAP bottle-cap logo" width="96" height="96">
+    <h1>BTLCAP Wallet</h1>
     <p class="catch">Welcome back to the wasteland.</p>
     <p class="muted">Enter your password to unlock.</p>
     <div class="field"><input type="password" id="pw" placeholder="password" autocomplete="current-password"></div>
@@ -247,11 +247,11 @@ function viewLocked() {
 function viewDashboard() {
   const v = el(`<div class="dash">
     <header>
-      <div class="brand"><img class="brand-mini" src="/caps-logo.png" alt="" width="26" height="26">CAPS <span class="badge">${esc(state.net.name)}</span></div>
+      <div class="brand"><img class="brand-mini" src="/caps-logo.png" alt="" width="26" height="26">BTLCAP <span class="badge">${esc(state.net.name)}</span></div>
       <button class="btn small" data-act="lock">Lock</button>
     </header>
     <div class="balance">
-      <div class="amt"><span id="bal">—</span> <b>CAPS</b></div>
+      <div class="amt"><span id="bal">—</span> <b>BTLCAP</b></div>
       <button class="btn small" data-act="refresh">Refresh</button>
     </div>
     <nav class="tabs">
@@ -310,7 +310,7 @@ function panelReceive() {
       <button class="btn small" data-act="copy">Copy address</button>
       <button class="btn small" data-act="new">New address</button>
     </div>
-    <p class="muted">Share this address to receive CAPS.</p>
+    <p class="muted">Share this address to receive BTLCAP.</p>
   </div>`);
   p.addEventListener('click', async (e) => {
     const a = e.target.dataset.act;
@@ -334,7 +334,7 @@ function panelSend() {
     <div class="field"><label>Recipient address</label>
       <input id="to" placeholder="${esc(state.net.bech32)}1…" autocomplete="off" spellcheck="false">
       ${chips}</div>
-    <div class="field"><label>Amount (CAPS)</label>
+    <div class="field"><label>Amount (BTLCAP)</label>
       <input id="amt" inputmode="decimal" placeholder="0.00000000"></div>
     <div class="row">
       <button class="btn small" data-act="max">Max</button>
@@ -377,7 +377,7 @@ function looksLikeAddr(a) {
 async function doReview(p) {
   const to = $('#to', p).value.trim();
   const sendMax = p.dataset.sendmax === '1';
-  if (!looksLikeAddr(to)) return toast('Recipient does not look like a CAPS address', 'err');
+  if (!looksLikeAddr(to)) return toast('Recipient does not look like a BTLCAP address', 'err');
 
   let amountSats = 0n;
   if (!sendMax) {
@@ -399,8 +399,8 @@ async function doReview(p) {
   const rv = $('#review', p);
   rv.replaceChildren(el(`<div class="review">
     <div class="line"><span>To</span><b>${addrLabel(to)}</b></div>
-    <div class="line"><span>Amount</span><b>${esc(satsToCaps(built.sendSats))} CAPS</b></div>
-    <div class="line"><span>Network fee</span><b>${esc(satsToCaps(built.fee))} CAPS</b></div>
+    <div class="line"><span>Amount</span><b>${esc(satsToCaps(built.sendSats))} BTLCAP</b></div>
+    <div class="line"><span>Network fee</span><b>${esc(satsToCaps(built.fee))} BTLCAP</b></div>
     <div class="line"><span>Inputs</span><b>${built.inputs}</b></div>
     <button class="btn primary" data-act="confirm">Confirm & send</button>
   </div>`));
@@ -429,12 +429,12 @@ async function doSend(p, btn) {
       </div>`;
     rv.replaceChildren(el(`<div class="review pending-card">
       <div class="pc-head"><span class="pc-spin" aria-hidden="true">◴</span> Sent — awaiting confirmation</div>
-      <div class="line"><span>Amount</span><b>${esc(amountCaps)} CAPS</b></div>
+      <div class="line"><span>Amount</span><b>${esc(amountCaps)} BTLCAP</b></div>
       <div class="line"><span>To</span><b>${addrLabel(toAddr)}</b></div>
-      <div class="line"><span>Network fee</span><b>${esc(feeCaps)} CAPS</b></div>
+      <div class="line"><span>Network fee</span><b>${esc(feeCaps)} BTLCAP</b></div>
       <div class="line"><span>Transaction</span><span class="pc-tx">${txidHtml(txid)}</span></div>
       ${saveForm}
-      <p class="muted pc-eta">CAPS blocks target <b>~5 minutes</b>. Your balance updates and this moves to History once it's mined — you can safely leave this page.</p>
+      <p class="muted pc-eta">BTLCAP blocks target <b>~5 minutes</b>. Your balance updates and this moves to History once it's mined — you can safely leave this page.</p>
     </div>`));
     $('#to', p).value = ''; $('#amt', p).value = '';
     delete p.dataset.sendmax;
@@ -478,7 +478,7 @@ function renderPendingRow(pt) {
       ${to}
       <div class="h-tx">${txidHtml(pt.txid)}</div>
     </div>
-    <div class="h-amt send">−${esc(pt.amountCaps)}<small>CAPS</small>
+    <div class="h-amt send">−${esc(pt.amountCaps)}<small>BTLCAP</small>
       <div class="h-fee">awaiting confirmation</div></div>
   </li>`;
 }
@@ -505,7 +505,7 @@ function panelHistory() {
         const when = timeAgo(t.timestamp);
         const whenTitle = t.timestamp ? new Date(t.timestamp * 1000).toLocaleString() : '';
         const link = base ? `${base}/tx/${encodeURIComponent(t.txid)}` : '';
-        const feeLine = t.fee > 0 ? `<div class="h-fee">fee ${esc(String(t.fee))} CAPS</div>` : '';
+        const feeLine = t.fee > 0 ? `<div class="h-fee">fee ${esc(String(t.fee))} BTLCAP</div>` : '';
         const peer = t.peer && !t.coinbase
           ? `<div class="h-peer" title="${esc(t.peer)}">${recv ? 'from' : 'to'} ${addrLabel(t.peer)}</div>`
           : (t.coinbase ? '<div class="h-peer">block reward</div>' : '');
@@ -520,11 +520,11 @@ function panelHistory() {
               : `<span class="mono">${esc(t.txid.slice(0, 10))}…</span>`}
               ${t.height ? `<span class="h-height">block ${esc(String(t.height))}</span>` : ''}</div>
           </div>
-          <div class="h-amt ${esc(t.direction)}">${sign}${esc(String(t.amount))}<small>CAPS</small>${feeLine}</div>
+          <div class="h-amt ${esc(t.direction)}">${sign}${esc(String(t.amount))}<small>BTLCAP</small>${feeLine}</div>
         </li>`;
       }).join('');
       if (!pendingRows && !rows) {
-        p.replaceChildren(el('<div class="panel"><p class="muted">No transactions yet. Mine some CAPS or receive a payment and it will show up here.</p></div>'));
+        p.replaceChildren(el('<div class="panel"><p class="muted">No transactions yet. Mine some BTLCAP or receive a payment and it will show up here.</p></div>'));
         return;
       }
       p.replaceChildren(el(`<div class="panel"><ul class="hist">${pendingRows}${rows}</ul>
@@ -567,7 +567,7 @@ function panelAddresses() {
     if (a === 'ab-add') {
       const na = $('#ab-new-addr', p).value.trim();
       const nl = $('#ab-new-label', p).value.trim();
-      if (!looksLikeAddr(na)) return toast('That does not look like a CAPS address', 'err');
+      if (!looksLikeAddr(na)) return toast('That does not look like a BTLCAP address', 'err');
       if (!nl) return toast('Give the address a name', 'err');
       await saveContact(na, nl);
       toast('Added to address book', 'ok');
