@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -375,7 +376,14 @@ type historyEntry struct {
 // maxHistoryTxs caps how many transactions we enrich per request. Each one is a
 // separate explorer round-trip, so this bounds both latency and load on the
 // explorer — which runs on the same box as the node and the wallet backend.
-const maxHistoryTxs = 40
+const maxHistoryTxs = 50
+
+// maxHistoryScan bounds how many candidate txids we enrich (one explorer
+// round-trip each) before ranking by recency and trimming to maxHistoryTxs. It
+// must be comfortably larger than maxHistoryTxs so that sends — which live on
+// change addresses collected after a busy receive address — are not truncated
+// before we ever get to rank them.
+const maxHistoryScan = 120
 
 // sats parses an explorer amount. They arrive as strings holding a satoshi
 // count, sometimes with a trailing ".00000000"; an unparseable one counts as 0
@@ -415,10 +423,14 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		mine[a] = true
 	}
 
-	// Collect candidate txids across every address the wallet owns, newest
-	// first. The explorer returns each address's list newest-first already.
-	var order []string
-	seen := map[string]bool{}
+	// Collect each address's txids (the explorer returns them newest-first), then
+	// merge round-robin: one tx from each address, then the next from each, and so
+	// on. A naive "all of address 0, then address 1, …" pass lets a single busy
+	// receive address fill the whole budget, truncating away the change addresses
+	// where a wallet's *sends* live — which is exactly why sent history went
+	// missing. Round-robin guarantees every address is represented before any one
+	// address's deeper history is taken.
+	lists := make([][]string, 0, len(addrs))
 	for _, a := range addrs {
 		var ar struct {
 			LastTxs []struct {
@@ -428,95 +440,143 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		if err := s.explorerGet(r.Context(), "/ext/getaddress/"+a, &ar); err != nil {
 			continue // an address with no history 404s; that is not fatal
 		}
+		l := make([]string, 0, len(ar.LastTxs))
 		for _, t := range ar.LastTxs {
-			if t.Addresses != "" && !seen[t.Addresses] {
-				seen[t.Addresses] = true
-				order = append(order, t.Addresses)
+			if t.Addresses != "" {
+				l = append(l, t.Addresses)
 			}
 		}
+		if len(l) > 0 {
+			lists = append(lists, l)
+		}
 	}
-	if len(order) > maxHistoryTxs {
-		order = order[:maxHistoryTxs]
+	var order []string
+	seen := map[string]bool{}
+	for depth := 0; len(order) < maxHistoryScan; depth++ {
+		progressed := false
+		for _, l := range lists {
+			if depth >= len(l) {
+				continue
+			}
+			progressed = true
+			if tx := l[depth]; !seen[tx] {
+				seen[tx] = true
+				order = append(order, tx)
+				if len(order) >= maxHistoryScan {
+					break
+				}
+			}
+		}
+		if !progressed {
+			break
+		}
 	}
 
+	// Enrich each candidate (one gettx explorer round-trip apiece) concurrently —
+	// a busy wallet can have ~100 of these, and doing them serially blew past the
+	// request timeout. A small worker pool keeps the explorer from being hammered.
 	out := make([]historyEntry, 0, len(order))
+	var histMu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
 	for _, txid := range order {
-		// Two shapes to respect here, both easy to get wrong silently:
-		// gettx nests the transaction under a "tx" key, and every amount is a
-		// JSON *string*. Decoding a flat struct, or an amount as a number,
-		// yields zeroes with no error at all.
-		var resp struct {
-			Tx struct {
-				TxID string `json:"txid"`
-				Vin  []struct {
-					Addresses string `json:"addresses"`
-					Amount    string `json:"amount"`
-				} `json:"vin"`
-				Vout []struct {
-					Addresses string `json:"addresses"`
-					Amount    string `json:"amount"`
-				} `json:"vout"`
-				Timestamp  int64 `json:"timestamp"`
-				BlockIndex int64 `json:"blockindex"`
-			} `json:"tx"`
-		}
-		if err := s.explorerGet(r.Context(), "/ext/gettx/"+txid, &resp); err != nil {
-			continue
-		}
-		tx := resp.Tx
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(txid string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Two shapes to respect here, both easy to get wrong silently:
+			// gettx nests the transaction under a "tx" key, and every amount is a
+			// JSON *string*. Decoding a flat struct, or an amount as a number,
+			// yields zeroes with no error at all.
+			var resp struct {
+				Tx struct {
+					TxID string `json:"txid"`
+					Vin  []struct {
+						Addresses string `json:"addresses"`
+						Amount    string `json:"amount"`
+					} `json:"vin"`
+					Vout []struct {
+						Addresses string `json:"addresses"`
+						Amount    string `json:"amount"`
+					} `json:"vout"`
+					Timestamp  int64 `json:"timestamp"`
+					BlockIndex int64 `json:"blockindex"`
+				} `json:"tx"`
+			}
+			if err := s.explorerGet(r.Context(), "/ext/gettx/"+txid, &resp); err != nil {
+				return
+			}
+			tx := resp.Tx
 
-		// Explorer amounts are satoshis (despite the decimal formatting).
-		var inMine, outMine, inTotal, outTotal float64
-		coinbase := false
-		peerIn, peerOut := "", ""
-		for _, v := range tx.Vin {
-			amt := sats(v.Amount)
-			inTotal += amt
-			if v.Addresses == "coinbase" {
-				coinbase = true
+			// Explorer amounts are satoshis (despite the decimal formatting).
+			var inMine, outMine, inTotal, outTotal float64
+			coinbase := false
+			peerIn, peerOut := "", ""
+			for _, v := range tx.Vin {
+				amt := sats(v.Amount)
+				inTotal += amt
+				if v.Addresses == "coinbase" {
+					coinbase = true
+				}
+				if mine[v.Addresses] {
+					inMine += amt
+				} else if peerIn == "" {
+					peerIn = v.Addresses
+				}
 			}
-			if mine[v.Addresses] {
-				inMine += amt
-			} else if peerIn == "" {
-				peerIn = v.Addresses
+			for _, v := range tx.Vout {
+				amt := sats(v.Amount)
+				outTotal += amt
+				if mine[v.Addresses] {
+					outMine += amt
+				} else if peerOut == "" {
+					peerOut = v.Addresses
+				}
 			}
-		}
-		for _, v := range tx.Vout {
-			amt := sats(v.Amount)
-			outTotal += amt
-			if mine[v.Addresses] {
-				outMine += amt
-			} else if peerOut == "" {
-				peerOut = v.Addresses
-			}
-		}
 
-		e := historyEntry{
-			TxID: txid, Height: tx.BlockIndex, Timestamp: tx.Timestamp, Coinbase: coinbase,
-		}
-		net := outMine - inMine // >0 the wallet gained, <0 it spent
-		switch {
-		case inMine == 0:
-			e.Direction, e.Amount, e.Peer = "receive", caps(outMine), peerIn
-		case net > 0:
-			e.Direction, e.Amount, e.Peer = "receive", caps(net), peerIn
-		case net < 0:
-			e.Direction, e.Amount, e.Peer = "send", caps(-net), peerOut
-			// Fee is only knowable when the wallet funded every input.
-			if inMine == inTotal && !coinbase {
-				e.Fee = caps(inTotal - outTotal)
-				// What the recipient got; the fee is listed separately. Round
-				// again so the subtraction cannot reintroduce float noise.
-				e.Amount = caps(-net - (inTotal - outTotal))
+			e := historyEntry{
+				TxID: txid, Height: tx.BlockIndex, Timestamp: tx.Timestamp, Coinbase: coinbase,
 			}
-		default:
-			// Everything came back to the wallet: a consolidation or self-send.
-			e.Direction, e.Amount = "self", caps(outMine)
-			if inMine == inTotal && !coinbase {
-				e.Fee = caps(inTotal - outTotal)
+			net := outMine - inMine // >0 the wallet gained, <0 it spent
+			switch {
+			case inMine == 0:
+				e.Direction, e.Amount, e.Peer = "receive", caps(outMine), peerIn
+			case net > 0:
+				e.Direction, e.Amount, e.Peer = "receive", caps(net), peerIn
+			case net < 0:
+				e.Direction, e.Amount, e.Peer = "send", caps(-net), peerOut
+				// Fee is only knowable when the wallet funded every input.
+				if inMine == inTotal && !coinbase {
+					e.Fee = caps(inTotal - outTotal)
+					// What the recipient got; the fee is listed separately. Round
+					// again so the subtraction cannot reintroduce float noise.
+					e.Amount = caps(-net - (inTotal - outTotal))
+				}
+			default:
+				// Everything came back to the wallet: a consolidation or self-send.
+				e.Direction, e.Amount = "self", caps(outMine)
+				if inMine == inTotal && !coinbase {
+					e.Fee = caps(inTotal - outTotal)
+				}
 			}
+			histMu.Lock()
+			out = append(out, e)
+			histMu.Unlock()
+		}(txid)
+	}
+	wg.Wait()
+
+	// Newest first across every address (round-robin collection mixed directions
+	// and addresses together), then return at most maxHistoryTxs.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Height != out[j].Height {
+			return out[i].Height > out[j].Height
 		}
-		out = append(out, e)
+		return out[i].Timestamp > out[j].Timestamp
+	})
+	if len(out) > maxHistoryTxs {
+		out = out[:maxHistoryTxs]
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
