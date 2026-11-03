@@ -134,8 +134,8 @@ var (
 const scanTTL = 10 * time.Second
 const maxScanCacheEntries = 512
 
-// CAPS addresses: bech32 (caps1/capsrt1/tcaps1) or base58 (C.../legacy). Keep
-// the allowed charset tight — this string goes into a scantxoutset descriptor.
+// BTLCAP addresses: bech32 (btlcap1/btlcaprt1/tbtlcap1) or base58 (B.../legacy).
+// Keep the allowed charset tight — this string goes into a scantxoutset descriptor.
 var addrRe = regexp.MustCompile(`^[a-zA-Z0-9]{20,110}$`)
 
 func validAddr(a string) bool { return addrRe.MatchString(a) }

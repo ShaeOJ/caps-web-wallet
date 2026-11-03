@@ -4,14 +4,14 @@
 export const NETWORKS = {
   main: {
     name: 'main',
-    bech32: 'caps',
-    pubKeyHash: 0x1c, // 'C'
-    scriptHash: 0x1d,
-    wif: 0x9c,
+    bech32: 'btlcap',
+    pubKeyHash: 0x19, // 'B'
+    scriptHash: 0x32, // 'M'
+    wif: 0x99,
   },
   regtest: {
     name: 'regtest',
-    bech32: 'capsrt',
+    bech32: 'btlcaprt',
     pubKeyHash: 0x6f, // 111
     scriptHash: 0xc4, // 196
     wif: 0xef, // 239

@@ -371,7 +371,7 @@ async function saveRecipientFromSend(p) {
 }
 
 function looksLikeAddr(a) {
-  return a.startsWith(state.net.bech32 + '1') || /^[C1-9A-HJ-NP-Za-km-z]{25,40}$/.test(a);
+  return a.startsWith(state.net.bech32 + '1') || /^[B1-9A-HJ-NP-Za-km-z]{25,40}$/.test(a);
 }
 
 async function doReview(p) {

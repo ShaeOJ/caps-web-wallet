@@ -1,7 +1,7 @@
 # CAPS Web Wallet
 
-A **non-custodial** browser wallet for [CAPS](https://caps.undergroundroots.ca) — a SHA256d
-Bitcoin fork (bech32 `caps1…`, legacy `C…`, P2P 12566 / RPC 12567).
+A **non-custodial** browser wallet for [BTLCAP](https://caps.undergroundroots.ca) (formerly CAPS) — a SHA256d
+Bitcoin fork (bech32 `btlcap1…`, legacy `B…`, P2P 12566 / RPC 12567).
 
 > Mine it. Own it. Trade it. — self-custody for the wasteland.
 
@@ -44,10 +44,10 @@ different version of a crypto library.
 
 | param        | mainnet      | regtest      |
 |--------------|--------------|--------------|
-| bech32 HRP   | `caps`       | `capsrt`     |
-| P2PKH ver    | `0x1c` (`C`) | `0x6f` (111) |
-| P2SH ver     | `0x1d`       | `0xc4` (196) |
-| WIF byte     | `0x9c`       | `0xef` (239) |
+| bech32 HRP   | `btlcap`     | `btlcaprt`   |
+| P2PKH ver    | `0x19` (`B`) | `0x6f` (111) |
+| P2SH ver     | `0x32` (`M`) | `0xc4` (196) |
+| WIF byte     | `0x99`       | `0xef` (239) |
 | BIP32 xprv/xpub | `0x0488ade4` / `0x0488b21e` | testnet `0x04358394` / `0x043587cf` |
 | P2P / RPC    | 12566 / 12567 | (regtest 13766 / 13667 in harness) |
 
