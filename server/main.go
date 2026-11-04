@@ -40,6 +40,9 @@ import (
 
 type config struct {
 	rpcURL, rpcUser, rpcPass string
+	sidechainRPCURL          string
+	sidechainRPCUser         string
+	sidechainRPCPass         string
 	explorerURL              string
 	explorerPublicURL        string
 	webDir                   string
@@ -56,10 +59,13 @@ func envOr(k, def string) string {
 
 func loadConfig() config {
 	return config{
-		rpcURL:      envOr("CAPS_RPC_URL", "http://127.0.0.1:13667"),
-		rpcUser:     envOr("CAPS_RPC_USER", "rt"),
-		rpcPass:     envOr("CAPS_RPC_PASS", "rt"),
-		explorerURL: strings.TrimRight(envOr("EXPLORER_URL", ""), "/"),
+		rpcURL:           envOr("CAPS_RPC_URL", "http://127.0.0.1:13667"),
+		rpcUser:          envOr("CAPS_RPC_USER", "rt"),
+		rpcPass:          envOr("CAPS_RPC_PASS", "rt"),
+		sidechainRPCURL:  envOr("SIDECHAIN_RPC_URL", "http://127.0.0.1:14668"),
+		sidechainRPCUser: envOr("SIDECHAIN_RPC_USER", "bcaprpc"),
+		sidechainRPCPass: envOr("SIDECHAIN_RPC_PASS", "bcappass123"),
+		explorerURL:      strings.TrimRight(envOr("EXPLORER_URL", ""), "/"),
 		// The browser cannot reach EXPLORER_URL when it is a loopback address,
 		// so links out are built from the public one.
 		explorerPublicURL: strings.TrimRight(envOr("EXPLORER_PUBLIC_URL", "https://caps.undergroundroots.ca"), "/"),
@@ -111,6 +117,33 @@ func (c config) rpc(ctx context.Context, method string, params ...any) (json.Raw
 	}
 	if r.Error != nil {
 		return nil, fmt.Errorf("rpc %s: %s (code %d)", method, r.Error.Message, r.Error.Code)
+	}
+	return r.Result, nil
+}
+
+func (c config) sidechainRPC(ctx context.Context, method string, params ...any) (json.RawMessage, error) {
+	if params == nil {
+		params = []any{}
+	}
+	body, _ := json.Marshal(rpcReq{JSONRPC: "1.0", ID: "caps-wallet-aux", Method: method, Params: params})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.sidechainRPCURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.sidechainRPCUser, c.sidechainRPCPass)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := rpcClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	var r rpcResp
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("sidechain rpc %s: bad response (http %d)", method, resp.StatusCode)
+	}
+	if r.Error != nil {
+		return nil, fmt.Errorf("sidechain rpc %s: %s (code %d)", method, r.Error.Message, r.Error.Code)
 	}
 	return r.Result, nil
 }
@@ -585,6 +618,67 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
+	addrsParam := r.URL.Query().Get("addresses")
+	var addrs []string
+	if addrsParam != "" {
+		for _, a := range strings.Split(addrsParam, ",") {
+			a = strings.TrimSpace(a)
+			if validAddr(a) {
+				addrs = append(addrs, a)
+			}
+		}
+	}
+
+	res, err := s.cfg.sidechainRPC(r.Context(), "getcards", addrs)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"cards":     []any{},
+			"total":     0,
+			"forge_fee": 500.0,
+			"online":    false,
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	var data struct {
+		Cards    []any   `json:"cards"`
+		Total    int     `json:"total"`
+		ForgeFee float64 `json:"forge_fee"`
+	}
+	if err := json.Unmarshal(res, &data); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"cards":     []any{},
+			"total":     0,
+			"forge_fee": 500.0,
+			"online":    false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cards":     data.Cards,
+		"total":     data.Total,
+		"forge_fee": data.ForgeFee,
+		"online":    true,
+	})
+}
+
+func (s *server) handleSidechainInfo(w http.ResponseWriter, r *http.Request) {
+	res, err := s.cfg.sidechainRPC(r.Context(), "getsidechaininfo")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"online": false,
+			"error":  err.Error(),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(res)
+}
+
 func (s *server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"network": s.cfg.network})
 }
@@ -630,6 +724,8 @@ func main() {
 	mux.HandleFunc("GET /api/feerate", s.handleFeerate)
 	mux.HandleFunc("POST /api/broadcast", s.handleBroadcast)
 	mux.HandleFunc("GET /api/network", s.handleNetwork)
+	mux.HandleFunc("GET /api/cards", s.handleCards)
+	mux.HandleFunc("GET /api/sidechain/info", s.handleSidechainInfo)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := cfg.rpc(r.Context(), "getblockcount"); err != nil {
 			writeErr(w, http.StatusBadGateway, "node unreachable")

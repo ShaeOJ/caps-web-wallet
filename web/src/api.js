@@ -26,6 +26,15 @@ export async function getHistory(addresses) {
   return get('/api/history?addresses=' + encodeURIComponent(list.join(',')));
 }
 
+export async function getCards(addresses) {
+  const list = Array.isArray(addresses) ? addresses : [addresses];
+  return get('/api/cards?addresses=' + encodeURIComponent(list.join(',')));
+}
+
+export async function getSidechainInfo() {
+  return get('/api/sidechain/info');
+}
+
 export async function broadcast(hex) {
   const r = await fetch('/api/broadcast', {
     method: 'POST',

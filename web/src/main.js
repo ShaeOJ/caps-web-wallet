@@ -8,6 +8,8 @@ import {
   newMnemonic, isValidMnemonic, openWallet, encryptSeed, decryptSeed,
   buildTx, capsToSats, satsToCaps,
 } from './wallet.js';
+import { renderCapToCanvas, RARITY_TIERS } from './cap-renderer.js';
+import { buildTransferCardTx, buildForgeCapTx, FORGE_FEE_SATS } from './capc.js';
 
 const AUTO_LOCK_MS = 5 * 60 * 1000;
 
@@ -19,6 +21,7 @@ const state = {
   balanceSats: 0n,
   recvIndex: 0,
   idleTimer: null,
+  cards: [],
   // Sends we broadcast this session but have not yet seen confirmed. The explorer
   // (and thus History/balance) only sees a tx once it's mined (~1 BTLCAP block),
   // so we surface these optimistically until they show up confirmed.
@@ -257,6 +260,7 @@ function viewDashboard() {
     <nav class="tabs">
       <button class="tab active" data-tab="receive">Receive</button>
       <button class="tab" data-tab="send">Send</button>
+      <button class="tab" data-tab="bottlecaps">🍾 Bottlecaps</button>
       <button class="tab" data-tab="history">History</button>
       <button class="tab" data-tab="addresses">Addresses</button>
     </nav>
@@ -285,6 +289,12 @@ async function refresh() {
     state.utxos = r.utxos;
     state.balanceSats = r.utxos.reduce((s, u) => s + capsToSats(u.amount), 0n);
     updateBalanceUI();
+    try {
+      const cr = await api.getCards(state.session.wallet.allAddresses);
+      state.cards = cr.cards || [];
+      const countEl = document.getElementById('caps-count');
+      if (countEl) countEl.textContent = state.cards.length;
+    } catch (_) {}
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -292,6 +302,7 @@ function showPanel(tab) {
   const p = $('#panel'); if (!p) return;
   if (tab === 'receive') p.replaceChildren(panelReceive());
   if (tab === 'send') p.replaceChildren(panelSend());
+  if (tab === 'bottlecaps') p.replaceChildren(panelBottlecaps());
   if (tab === 'history') p.replaceChildren(panelHistory());
   if (tab === 'addresses') p.replaceChildren(panelAddresses());
 }
@@ -587,3 +598,305 @@ function panelAddresses() {
 initBgfx();
 initBetaNotice();
 boot();
+
+// ---- bottlecaps collection & forge -----------------------------------------
+
+function panelBottlecaps() {
+  const v = el(`<div class="panel">
+    <div class="caps-header">
+      <div>
+        <h2 style="margin:0">Bottlecaps Collection</h2>
+        <div class="caps-summary">Owned: <b id="caps-count">${state.cards.length}</b> cards</div>
+      </div>
+      <button class="btn small primary" data-act="forge-open">🔨 Forge Cap</button>
+    </div>
+
+    <div class="tier-badges">
+      <span class="t-badge tier-1">Scrap (60%)</span>
+      <span class="t-badge tier-2">Brass (25%)</span>
+      <span class="t-badge tier-3">Rad Silver (10%)</span>
+      <span class="t-badge tier-4">Vault Gold (4%)</span>
+      <span class="t-badge tier-5">Mythic (1%)</span>
+    </div>
+
+    <div id="caps-list-container">
+      <p class="muted">Loading cards…</p>
+    </div>
+  </div>`);
+
+  const listContainer = $('#caps-list-container', v);
+
+  const renderCards = () => {
+    if (state.cards.length === 0) {
+      listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
+        <p style="margin:4px 0 8px; font-weight:600">No bottlecaps discovered yet!</p>
+        <p class="muted" style="margin:0 0 12px; font-size:12.5px;">Mine BTLCAP blocks on the pool to win card drops, or spend 500 BCAP to forge your own custom cap.</p>
+        <button class="btn primary small" data-act="forge-open">Forge Your First Cap (500 BCAP)</button>
+      </div>`;
+      return;
+    }
+
+    const grid = el(`<div class="caps-grid"></div>`);
+    state.cards.forEach((card) => {
+      const tierId = card.tier || 1;
+      const tile = el(`<div class="cap-tile glow-${tierId}">
+        <div class="cap-canvas-wrap"><canvas width="180" height="180"></canvas></div>
+        <div class="t-badge tier-${tierId}" style="display:inline-block; font-size:10px; margin:2px 0;">${esc(card.traits?.class_name || RARITY_TIERS[tierId]?.name || 'Common')}</div>
+        <div class="cap-title">Card #${esc(card.card_id)}</div>
+        <div class="cap-sub">Serial #${esc(card.serial)}</div>
+      </div>`);
+
+      const cvs = tile.querySelector('canvas');
+      renderCapToCanvas(cvs, card);
+
+      tile.addEventListener('click', () => openCardDetailModal(card));
+      grid.appendChild(tile);
+    });
+
+    listContainer.replaceChildren(grid);
+  };
+
+  // Fetch cards
+  api.getCards(state.session.wallet.allAddresses).then((res) => {
+    state.cards = res.cards || [];
+    const countEl = $('#caps-count', v);
+    if (countEl) countEl.textContent = state.cards.length;
+    renderCards();
+  }).catch(() => {
+    renderCards();
+  });
+
+  v.addEventListener('click', (e) => {
+    if (e.target.dataset.act === 'forge-open') {
+      openForgeStudioModal();
+    }
+  });
+
+  return v;
+}
+
+function openCardDetailModal(card) {
+  const tierId = card.tier || 1;
+  const tier = RARITY_TIERS[tierId] || RARITY_TIERS[1];
+  const traits = card.traits || {};
+
+  const overlay = el(`<div class="cap-modal-overlay">
+    <div class="cap-modal">
+      <button class="modal-close" data-act="close">&times;</button>
+      <div class="cap-hero-render">
+        <canvas width="340" height="340"></canvas>
+      </div>
+
+      <div style="text-align:center; margin-bottom:12px;">
+        <span class="t-badge tier-${tierId}">${esc(tier.name)} (${esc(tier.pct)} rarity roll)</span>
+        <h2 style="margin:8px 0 4px">Bottlecap Card #${esc(card.card_id)}</h2>
+        <div class="muted">Serial #${esc(card.serial)} · Block ${esc(card.mint_block || 'Mined')}</div>
+      </div>
+
+      <div class="traits-container">
+        <div class="trait-chip"><span>Metal:</span> <b>${esc(traits.base_metal || 'rust_iron')}</b></div>
+        <div class="trait-chip"><span>Flutes:</span> <b>${esc(traits.flutes || 'classic_21')}</b></div>
+        <div class="trait-chip"><span>Emblem:</span> <b>${esc(traits.emblem || 'atomic')}</b></div>
+        <div class="trait-chip"><span>Wear:</span> <b>${esc(traits.wear || 'mint')}</b></div>
+        <div class="trait-chip"><span>Glow:</span> <b>${esc(traits.glow || 'none')}</b></div>
+      </div>
+
+      <div class="seal-info">
+        <div><span>UTXO Single-Use Seal:</span></div>
+        <div style="margin-top:3px">${esc(card.utxo || 'N/A')}</div>
+        <div style="margin-top:6px"><span>Recipe Hash:</span></div>
+        <div style="font-size:10.5px">${esc(card.recipe_hash || 'N/A')}</div>
+      </div>
+
+      <div class="review" style="margin-top:14px">
+        <div class="field">
+          <label>Transfer to Wasteland Address</label>
+          <input type="text" id="transfer-to" placeholder="btlcap1... or B...">
+        </div>
+        <button class="btn primary" data-act="transfer-send">Transfer Card</button>
+      </div>
+    </div>
+  </div>`);
+
+  const cvs = overlay.querySelector('canvas');
+  renderCapToCanvas(cvs, card);
+
+  overlay.addEventListener('click', async (e) => {
+    if (e.target.dataset.act === 'close' || e.target === overlay) {
+      overlay.remove();
+      return;
+    }
+    if (e.target.dataset.act === 'transfer-send') {
+      const toAddr = $('#transfer-to', overlay).value.trim();
+      if (!toAddr) return toast('Enter recipient address', 'err');
+      try {
+        toast('Building single-use seal transfer…');
+        const changeAddr = currentReceiveAddr();
+        const txData = buildTransferCardTx({
+          wallet: state.session.wallet,
+          card,
+          utxos: state.utxos,
+          toAddress: toAddr,
+          changeAddress: changeAddr,
+          feeRateSatPerVB: 10
+        });
+
+        toast('Broadcasting card transfer…');
+        const res = await api.broadcast(txData.hex);
+        toast(`Card #${card.card_id} Transferred! Tx: ${res.txid.slice(0, 12)}…`, 'ok');
+        overlay.remove();
+        refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
+
+function openForgeStudioModal() {
+  const currentBal = state.balanceSats;
+  const canAfford = currentBal >= FORGE_FEE_SATS;
+
+  const overlay = el(`<div class="cap-modal-overlay">
+    <div class="cap-modal">
+      <button class="modal-close" data-act="close">&times;</button>
+      <div style="text-align:center">
+        <h2 style="margin:0 0 4px">🔨 Forge Custom Cap</h2>
+        <p class="muted" style="margin:0 0 10px; font-size:12.5px;">Mint your own custom bottlecap design permanently into the blockchain.</p>
+        <span class="burn-cost-pill">Burn Fee: 500 BCAP</span>
+      </div>
+
+      <div class="forge-preview">
+        <canvas width="280" height="280"></canvas>
+      </div>
+
+      <div class="field">
+        <label>Collection / Design Title</label>
+        <input type="text" id="fg-title" value="Mojave Outpost VIP" maxlength="40">
+      </div>
+
+      <div class="field">
+        <label>Base Metal</label>
+        <select id="fg-metal">
+          <option value="rust_iron">Rusty Wasteland Iron</option>
+          <option value="weathered_copper">Weathered Copper</option>
+          <option value="antiqued_brass">Antiqued Brass</option>
+          <option value="rad_silver">Rad-Glow Silver</option>
+          <option value="gilded_gold">Gilded Vault Gold</option>
+          <option value="obsidian_carbon">Obsidian Carbon</option>
+          <option value="weathered_tin">Weathered Tin</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Emblem</label>
+        <select id="fg-emblem">
+          <option value="atomic">Atomic Nucleus & Rings</option>
+          <option value="vault_door">Vault Door 76</option>
+          <option value="sunset_star">Sunset Starburst</option>
+          <option value="skull">Raider Skull & Crossbones</option>
+          <option value="bcap_stamp">BCAP Wasteland Stamp</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Wear & Tear</label>
+        <select id="fg-wear">
+          <option value="mint">Mint Condition</option>
+          <option value="light_scratches">Light Scratches</option>
+          <option value="patina">Desert Dust Patina</option>
+          <option value="bullet_dent">Bullet Dent</option>
+          <option value="heavy_rust">Heavy Wasteland Rust</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Glow Corona Effect</label>
+        <select id="fg-glow">
+          <option value="glow_none">None (Standard)</option>
+          <option value="glow_cyan">Rad-Cyan Glow</option>
+          <option value="glow_gold">Vault Gold Glow</option>
+          <option value="glow_violet">Mythic Violet Aura</option>
+        </select>
+      </div>
+
+      <div class="review" style="margin-top:16px">
+        <div class="line"><span>Wallet Balance:</span> <b>${satsToCaps(currentBal)} BCAP</b></div>
+        <div class="line"><span>Required Burn:</span> <b style="color:var(--err)">500.00000000 BCAP</b></div>
+        <button class="btn primary" id="btn-forge" ${canAfford ? '' : 'disabled'}>
+          ${canAfford ? 'Forge into Chain (Burn 500 BCAP)' : 'Insufficient BCAP (500 Required)'}
+        </button>
+      </div>
+    </div>
+  </div>`);
+
+  const cvs = overlay.querySelector('canvas');
+
+  const updatePreview = () => {
+    const title = $('#fg-title', overlay).value.trim() || 'Custom Cap';
+    const metal = $('#fg-metal', overlay).value;
+    const emblem = $('#fg-emblem', overlay).value;
+    const wear = $('#fg-wear', overlay).value;
+    const glow = $('#fg-glow', overlay).value;
+
+    const tierId = glow === 'glow_violet' ? 5 : (glow === 'glow_gold' ? 4 : (glow === 'glow_cyan' ? 3 : 2));
+
+    const recipe = {
+      version: 1,
+      title,
+      tier: tierId,
+      traits: {
+        base_metal: metal,
+        flutes: 'classic_21',
+        emblem: emblem,
+        wear: wear,
+        glow: glow
+      }
+    };
+    renderCapToCanvas(cvs, recipe);
+    return recipe;
+  };
+
+  overlay.querySelectorAll('input, select').forEach((inp) => {
+    inp.addEventListener('input', updatePreview);
+    inp.addEventListener('change', updatePreview);
+  });
+  updatePreview();
+
+  overlay.addEventListener('click', async (e) => {
+    if (e.target.dataset.act === 'close' || e.target === overlay) {
+      overlay.remove();
+      return;
+    }
+    if (e.target.id === 'btn-forge') {
+      if (!canAfford) return toast('Insufficient BCAP balance (500 required)', 'err');
+      const recipe = updatePreview();
+      try {
+        toast('Building 500 BCAP burn transaction…');
+        const creatorAddr = currentReceiveAddr();
+        const changeAddr = currentReceiveAddr();
+
+        const txData = buildForgeCapTx({
+          wallet: state.session.wallet,
+          utxos: state.utxos,
+          creatorAddress: creatorAddr,
+          changeAddress: changeAddr,
+          recipe,
+          feeRateSatPerVB: 10
+        });
+
+        toast('Broadcasting custom forge to chain…');
+        const res = await api.broadcast(txData.hex);
+        toast(`Custom Cap Forged! Tx: ${res.txid.slice(0, 12)}… (500 BCAP burned)`, 'ok');
+        overlay.remove();
+        refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
