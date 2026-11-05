@@ -862,9 +862,7 @@ function openForgeStudioModal() {
         </div>
         <canvas id="fg-draw-pad" class="draw-pad-canvas" width="220" height="220"></canvas>
         <div class="draw-controls">
-          <div class="palette-row" id="fg-draw-palette">
-            ${DRAW_COLORS.map(c => `<button type="button" class="color-swatch ${c.hex === '#ffd700' ? 'active' : ''}" data-color="${c.hex}" style="background-color:${c.hex}" title="${c.name}"></button>`).join('')}
-          </div>
+          <div class="palette-row" id="fg-draw-palette"></div>
           <div class="brush-sizes" id="fg-brush-sizes">
             <button type="button" class="brush-btn" data-w="0.03">S</button>
             <button type="button" class="brush-btn active" data-w="0.06">M</button>
@@ -903,6 +901,19 @@ function openForgeStudioModal() {
   const previewCvs = overlay.querySelector('#fg-preview-canvas');
   const drawPadCvs = overlay.querySelector('#fg-draw-pad');
   const fileInput = overlay.querySelector('#fg-file-input');
+  const paletteEl = overlay.querySelector('#fg-draw-palette');
+  if (paletteEl) {
+    paletteEl.innerHTML = '';
+    DRAW_COLORS.forEach((c) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'color-swatch' + (c.hex === activeColor ? ' active' : '');
+      btn.dataset.color = c.hex;
+      btn.style.setProperty('background-color', c.hex, 'important');
+      btn.title = c.name;
+      paletteEl.appendChild(btn);
+    });
+  }
 
   const updatePreview = () => {
     const title = $('#fg-title', overlay).value.trim() || 'Custom Cap';
@@ -966,30 +977,48 @@ function openForgeStudioModal() {
 
     for (const stroke of customStrokes) {
       if (!stroke.points || stroke.points.length === 0) continue;
+      const strokeWidth = Math.max(1.5, stroke.width * radius);
       ctx.strokeStyle = stroke.color;
-      ctx.lineWidth = Math.max(1.5, stroke.width * radius);
-      ctx.beginPath();
+      ctx.fillStyle = stroke.color;
+      ctx.lineWidth = strokeWidth;
       const p0 = stroke.points[0];
-      ctx.moveTo(center + p0.x * radius, center + p0.y * radius);
-      for (let i = 1; i < stroke.points.length; i++) {
-        const pt = stroke.points[i];
-        ctx.lineTo(center + pt.x * radius, center + pt.y * radius);
+
+      if (stroke.points.length === 1) {
+        ctx.beginPath();
+        ctx.arc(center + p0.x * radius, center + p0.y * radius, strokeWidth / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(center + p0.x * radius, center + p0.y * radius);
+        for (let i = 1; i < stroke.points.length; i++) {
+          const pt = stroke.points[i];
+          ctx.lineTo(center + pt.x * radius, center + pt.y * radius);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
 
     // Render active stroke
     if (currentStrokePoints.length > 0) {
+      const activeWidthPx = Math.max(1.5, activeWidth * radius);
       ctx.strokeStyle = activeColor;
-      ctx.lineWidth = Math.max(1.5, activeWidth * radius);
-      ctx.beginPath();
+      ctx.fillStyle = activeColor;
+      ctx.lineWidth = activeWidthPx;
       const p0 = currentStrokePoints[0];
-      ctx.moveTo(center + p0.x * radius, center + p0.y * radius);
-      for (let i = 1; i < currentStrokePoints.length; i++) {
-        const pt = currentStrokePoints[i];
-        ctx.lineTo(center + pt.x * radius, center + pt.y * radius);
+
+      if (currentStrokePoints.length === 1) {
+        ctx.beginPath();
+        ctx.arc(center + p0.x * radius, center + p0.y * radius, activeWidthPx / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(center + p0.x * radius, center + p0.y * radius);
+        for (let i = 1; i < currentStrokePoints.length; i++) {
+          const pt = currentStrokePoints[i];
+          ctx.lineTo(center + pt.x * radius, center + pt.y * radius);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
     ctx.restore();
   };

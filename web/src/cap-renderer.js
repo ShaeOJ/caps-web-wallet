@@ -311,16 +311,25 @@ function drawCustomStrokes(ctx, cx, cy, rad, strokes) {
 
   for (const s of strokes) {
     if (!s.points || s.points.length === 0) continue;
+    const strokeWidth = Math.max(1.5, (s.width || 0.05) * rad);
     ctx.strokeStyle = s.color || '#ffd700';
-    ctx.lineWidth = Math.max(1.5, (s.width || 0.05) * rad);
-    ctx.beginPath();
+    ctx.fillStyle = s.color || '#ffd700';
+    ctx.lineWidth = strokeWidth;
     const p0 = s.points[0];
-    ctx.moveTo(cx + p0.x * rad, cy + p0.y * rad);
-    for (let i = 1; i < s.points.length; i++) {
-      const pt = s.points[i];
-      ctx.lineTo(cx + pt.x * rad, cy + pt.y * rad);
+
+    if (s.points.length === 1) {
+      ctx.beginPath();
+      ctx.arc(cx + p0.x * rad, cy + p0.y * rad, strokeWidth / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(cx + p0.x * rad, cy + p0.y * rad);
+      for (let i = 1; i < s.points.length; i++) {
+        const pt = s.points[i];
+        ctx.lineTo(cx + pt.x * rad, cy + pt.y * rad);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
   }
   ctx.restore();
 }
