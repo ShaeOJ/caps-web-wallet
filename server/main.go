@@ -361,7 +361,8 @@ func (s *server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid raw tx hex")
 		return
 	}
-	raw, err := s.cfg.rpc(r.Context(), "sendrawtransaction", hex)
+	// Pass maxfeerate=0 to accept raw burn transactions (e.g. 500 BCAP for custom forge)
+	raw, err := s.cfg.rpc(r.Context(), "sendrawtransaction", hex, 0)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return

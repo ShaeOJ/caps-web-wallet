@@ -4,3 +4,4 @@ dist/
 server/caps-wallet
 server/caps-wallet.exe
 .env
+server/caps-wallet-server
