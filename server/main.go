@@ -647,81 +647,170 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 		return
 	}
 	var tip int64
-	if err := json.Unmarshal(rawTip, &tip); err != nil || tip < lastForgedScanHeight {
+	if err := json.Unmarshal(rawTip, &tip); err != nil {
 		return
 	}
 
-	start := lastForgedScanHeight
-	for h := start; h <= tip; h++ {
-		rawHash, err := s.cfg.rpc(ctx, "getblockhash", h)
-		if err != nil {
-			break
-		}
-		var bhash string
-		if err := json.Unmarshal(rawHash, &bhash); err != nil {
-			break
-		}
-		rawBlock, err := s.cfg.rpc(ctx, "getblock", bhash, 2)
-		if err != nil {
-			break
-		}
-		var block struct {
-			Tx []struct {
-				TxID string `json:"txid"`
-				Vout []struct {
-					Value        float64 `json:"value"`
-					ScriptPubKey struct {
-						Hex     string `json:"hex"`
-						Address string `json:"address"`
-					} `json:"scriptPubKey"`
-				} `json:"vout"`
-			} `json:"tx"`
-		}
-		if err := json.Unmarshal(rawBlock, &block); err != nil {
-			break
-		}
+	if lastForgedScanHeight <= tip {
+		start := lastForgedScanHeight
+		for h := start; h <= tip; h++ {
+			rawHash, err := s.cfg.rpc(ctx, "getblockhash", h)
+			if err != nil {
+				break
+			}
+			var bhash string
+			if err := json.Unmarshal(rawHash, &bhash); err != nil {
+				break
+			}
+			rawBlock, err := s.cfg.rpc(ctx, "getblock", bhash, 2)
+			if err != nil {
+				break
+			}
+			var block struct {
+				Tx []struct {
+					TxID string `json:"txid"`
+					Vout []struct {
+						Value        float64 `json:"value"`
+						ScriptPubKey struct {
+							Hex     string `json:"hex"`
+							Address string `json:"address"`
+						} `json:"scriptPubKey"`
+					} `json:"vout"`
+				} `json:"tx"`
+			}
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				break
+			}
 
-		for _, tx := range block.Tx {
-			if len(tx.Vout) < 2 {
-				continue
-			}
-			spk0 := tx.Vout[0].ScriptPubKey.Hex
-			idx := strings.Index(spk0, "4341504304")
-			if idx == -1 {
-				continue
-			}
-			payloadHex := spk0[idx:]
-			if len(payloadHex) < 86 {
-				continue
-			}
-			recipeHash := strings.ToLower(payloadHex[22:86])
-			owner := tx.Vout[1].ScriptPubKey.Address
-			utxo := fmt.Sprintf("%s:1", tx.TxID)
+			for _, tx := range block.Tx {
+				if len(tx.Vout) < 2 {
+					continue
+				}
+				spk0 := tx.Vout[0].ScriptPubKey.Hex
+				idx := strings.Index(spk0, "4341504304")
+				if idx == -1 {
+					continue
+				}
+				payloadHex := spk0[idx:]
+				if len(payloadHex) < 86 {
+					continue
+				}
+				recipeHash := strings.ToLower(payloadHex[22:86])
+				owner := tx.Vout[1].ScriptPubKey.Address
+				utxo := fmt.Sprintf("%s:1", tx.TxID)
 
-			serial := h*100 + int64(len(forgedCardsCache)+1)
-			card := map[string]any{
-				"card_id":       9000 + len(forgedCardsCache) + 1,
-				"serial":        serial,
-				"tier":          4,
-				"recipe_hash":   recipeHash,
-				"owner":         owner,
-				"mainnet_owner": owner,
-				"utxo":          utxo,
-				"status":        "ACTIVE",
-				"mint_block":    h,
-				"mint_txid":     tx.TxID,
-				"traits": map[string]any{
-					"base_metal": "gilded_gold",
-					"flutes":     "classic_21",
-					"emblem":     "custom",
-					"wear":       "mint",
-					"glow":       "glow_gold",
-				},
-				"transfers": []any{},
+				cid := 9000 + len(forgedCardsCache) + 1
+				if old, exists := forgedCardsCache[utxo]; exists {
+					if oldID, ok := old["card_id"].(int); ok && oldID > 0 {
+						cid = oldID
+					}
+				}
+
+				serial := h*100 + int64(len(forgedCardsCache)+1)
+				card := map[string]any{
+					"card_id":       cid,
+					"serial":        serial,
+					"tier":          4,
+					"recipe_hash":   recipeHash,
+					"owner":         owner,
+					"mainnet_owner": owner,
+					"utxo":          utxo,
+					"status":        "ACTIVE",
+					"mint_block":    h,
+					"mint_txid":     tx.TxID,
+					"traits": map[string]any{
+						"base_metal": "gilded_gold",
+						"flutes":     "classic_21",
+						"emblem":     "custom",
+						"wear":       "mint",
+						"glow":       "glow_gold",
+					},
+					"transfers": []any{},
+				}
+				forgedCardsCache[utxo] = card
 			}
-			forgedCardsCache[utxo] = card
+			lastForgedScanHeight = h + 1
 		}
-		lastForgedScanHeight = h + 1
+	}
+
+	// Mempool scan for unconfirmed forged cards so users see them immediately
+	rawMempool, err := s.cfg.rpc(ctx, "getrawmempool")
+	if err == nil {
+		var mempoolTxIDs []string
+		if err := json.Unmarshal(rawMempool, &mempoolTxIDs); err == nil {
+			mempoolSet := make(map[string]bool)
+			for _, txid := range mempoolTxIDs {
+				mempoolSet[txid] = true
+				utxo := fmt.Sprintf("%s:1", txid)
+				if _, exists := forgedCardsCache[utxo]; exists {
+					continue
+				}
+				rawTx, err := s.cfg.rpc(ctx, "getrawtransaction", txid, 1)
+				if err != nil {
+					continue
+				}
+				var tx struct {
+					TxID string `json:"txid"`
+					Vout []struct {
+						Value        float64 `json:"value"`
+						ScriptPubKey struct {
+							Hex     string `json:"hex"`
+							Address string `json:"address"`
+						} `json:"scriptPubKey"`
+					} `json:"vout"`
+				}
+				if err := json.Unmarshal(rawTx, &tx); err != nil {
+					continue
+				}
+				if len(tx.Vout) < 2 {
+					continue
+				}
+				spk0 := tx.Vout[0].ScriptPubKey.Hex
+				idx := strings.Index(spk0, "4341504304")
+				if idx == -1 {
+					continue
+				}
+				payloadHex := spk0[idx:]
+				if len(payloadHex) < 86 {
+					continue
+				}
+				recipeHash := strings.ToLower(payloadHex[22:86])
+				owner := tx.Vout[1].ScriptPubKey.Address
+
+				card := map[string]any{
+					"card_id":       9000 + len(forgedCardsCache) + 1,
+					"serial":        (tip+1)*100 + int64(len(forgedCardsCache)+1),
+					"tier":          4,
+					"recipe_hash":   recipeHash,
+					"owner":         owner,
+					"mainnet_owner": owner,
+					"utxo":          utxo,
+					"status":        "ACTIVE",
+					"mint_block":    tip + 1,
+					"mint_txid":     tx.TxID,
+					"pending":       true,
+					"traits": map[string]any{
+						"base_metal": "gilded_gold",
+						"flutes":     "classic_21",
+						"emblem":     "custom",
+						"wear":       "mint",
+						"glow":       "glow_gold",
+					},
+					"transfers": []any{},
+				}
+				forgedCardsCache[utxo] = card
+			}
+
+			// Clean up any pending cards that are no longer in the mempool
+			for utxo, card := range forgedCardsCache {
+				if p, ok := card["pending"].(bool); ok && p {
+					txid, _ := card["mint_txid"].(string)
+					if !mempoolSet[txid] {
+						delete(forgedCardsCache, utxo)
+					}
+				}
+			}
+		}
 	}
 }
 
