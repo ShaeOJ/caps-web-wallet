@@ -330,3 +330,4 @@ export function fulfillOrderSlip({
     totalPaidSats: priceSats + fee + CARD_SEAL_DUST_SATS,
   };
 }
+
