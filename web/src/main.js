@@ -10,6 +10,7 @@ import {
 } from './wallet.js';
 import { renderCapToCanvas, RARITY_TIERS, processImageToCircle } from './cap-renderer.js';
 import { buildTransferCardTx, buildForgeCapTx, FORGE_FEE_SATS } from './capc.js';
+import * as market from './market.js';
 
 const AUTO_LOCK_MS = 5 * 60 * 1000;
 
@@ -261,6 +262,7 @@ function viewDashboard() {
       <button class="tab active" data-tab="receive">Receive</button>
       <button class="tab" data-tab="send">Send</button>
       <button class="tab" data-tab="bottlecaps">🍾 Bottlecaps</button>
+      <button class="tab" data-tab="tradingpost">🏛️ Trading Post</button>
       <button class="tab" data-tab="history">History</button>
       <button class="tab" data-tab="addresses">Addresses</button>
     </nav>
@@ -303,6 +305,7 @@ function showPanel(tab) {
   if (tab === 'receive') p.replaceChildren(panelReceive());
   if (tab === 'send') p.replaceChildren(panelSend());
   if (tab === 'bottlecaps') p.replaceChildren(panelBottlecaps());
+  if (tab === 'tradingpost') p.replaceChildren(panelTradingPost());
   if (tab === 'history') p.replaceChildren(panelHistory());
   if (tab === 'addresses') p.replaceChildren(panelAddresses());
 }
@@ -601,6 +604,350 @@ boot();
 
 // ---- bottlecaps collection & forge -----------------------------------------
 
+
+// ---- wasteland trading post ------------------------------------------------
+
+function openListCardModal(card) {
+  const currentBal = state.balanceSats;
+  const canAfford = currentBal >= market.LISTING_FEE_SATS;
+
+  const overlay = el(`<div class="cap-modal-overlay">
+    <div class="cap-modal">
+      <button class="modal-close" data-act="close">&times;</button>
+      <div class="cap-hero-render" style="width:130px; height:130px; margin:0 auto 10px;">
+        <canvas width="130" height="130"></canvas>
+      </div>
+      <div style="text-align:center; margin-bottom:12px;">
+        <h2 style="margin:4px 0">List Card #${esc(card.card_id)} for Sale</h2>
+        <div class="muted">Serial #${esc(card.serial)} · Wasteland Trading Post</div>
+      </div>
+
+      <div class="field">
+        <label>Asking Price (BTLCAP)</label>
+        <input type="number" id="list-price" step="any" min="1" placeholder="e.g. 250" value="250">
+      </div>
+
+      <div class="seal-info" style="margin-top:10px; font-size:12px; font-family:inherit;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+          <span class="muted">Lister Proceeds (100%):</span>
+          <b id="list-payout-text" style="color:var(--amber2)">250.00 BTLCAP</b>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+          <span class="muted">Listing Fee:</span>
+          <b style="color:#ff9d8f">100.00 BTLCAP (On-Chain OP_LIST)</b>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span class="muted">Your Balance:</span>
+          <b>${satsToCaps(currentBal)} BTLCAP</b>
+        </div>
+      </div>
+
+      ${!canAfford ? `<div class="warn" style="margin-top:10px;">
+        ⚠️ Insufficient balance for 100 BCAP listing fee. Only BCAP holders may list cards in the wasteland.
+      </div>` : ''}
+
+      <div class="row" style="margin-top:14px;">
+        <button class="btn primary" data-act="confirm-list" ${!canAfford ? 'disabled' : ''}>Confirm & List Card</button>
+      </div>
+    </div>
+  </div>`);
+
+  const cvs = overlay.querySelector('canvas');
+  renderCapToCanvas(cvs, card);
+
+  const priceInput = $('#list-price', overlay);
+  const payoutText = $('#list-payout-text', overlay);
+  priceInput.addEventListener('input', () => {
+    const val = parseFloat(priceInput.value) || 0;
+    payoutText.textContent = `${val.toFixed(2)} BTLCAP`;
+  });
+
+  overlay.addEventListener('click', async (e) => {
+    if (e.target.dataset.act === 'close' || e.target === overlay) {
+      overlay.remove();
+      return;
+    }
+    if (e.target.dataset.act === 'confirm-list') {
+      const priceVal = parseFloat(priceInput.value);
+      if (isNaN(priceVal) || priceVal <= 0) {
+        return toast('Enter a valid asking price in BTLCAP', 'err');
+      }
+
+      const btn = e.target;
+      btn.disabled = true;
+      btn.textContent = 'Burning 100 BCAP Listing Fee…';
+
+      try {
+        toast('1/3: Building on-chain 100 BCAP listing fee…');
+        const changeAddr = currentReceiveAddr();
+        const sellerAddress = changeAddr;
+
+        const listTxData = market.buildListingProofTx({
+          wallet: state.session.wallet,
+          utxos: state.utxos,
+          cardId: card.card_id,
+          serial: card.serial,
+          priceCaps: priceVal,
+          changeAddress: changeAddr,
+          feeRateSatPerVB: 10,
+        });
+
+        toast('2/3: Broadcasting listing proof to network…');
+        const listBroadcast = await api.broadcast(listTxData.hex);
+
+        btn.textContent = 'Signing atomic swap order…';
+        toast('3/3: Signing atomic order slip…');
+        const [cardTxid, cardVoutStr] = card.utxo.split(':');
+        const cardVout = parseInt(cardVoutStr, 10);
+        const cardUtxoEntry = state.utxos.find((u) => u.txid === cardTxid && u.vout === cardVout);
+        if (!cardUtxoEntry) {
+          throw new Error(`Card UTXO ${card.utxo} not found in available wallet funds.`);
+        }
+        const cardKey = state.session.wallet.keyFor(cardUtxoEntry.address);
+        if (!cardKey) {
+          throw new Error(`Private key not found for card address ${cardUtxoEntry.address}`);
+        }
+
+        const orderSlip = market.buildOrderSlip({
+          cardUtxo: { txid: cardTxid, vout: cardVout, amountSats: market.CARD_SEAL_DUST_SATS },
+          cardKey,
+          sellerAddress,
+          priceCaps: priceVal,
+          net: state.session.wallet.net,
+        });
+
+        await api.postMarketOrder({
+          card_id: card.card_id,
+          serial: card.serial,
+          tier: card.tier || 1,
+          title: card.title || `Bottlecap #${card.card_id}`,
+          recipe_hash: card.recipe_hash || '',
+          traits: card.traits || {},
+          price_caps: priceVal,
+          seller_address: sellerAddress,
+          card_utxo: card.utxo,
+          listing_txid: listBroadcast.txid,
+          order_slip_psbt: orderSlip.psbtBase64,
+        });
+
+        toast(`Card #${card.card_id} listed for ${priceVal} BCAP!`, 'ok');
+        overlay.remove();
+        refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+        btn.disabled = false;
+        btn.textContent = 'Confirm & List Card';
+      }
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
+
+function panelTradingPost() {
+  const v = el(`<div class="panel">
+    <div class="caps-header">
+      <div>
+        <h2 style="margin:0">Wasteland Trading Post</h2>
+        <div class="caps-summary">Trustless Atomic Swaps · 100% to Lister</div>
+      </div>
+      <button class="btn small" data-act="market-refresh">🔄 Refresh</button>
+    </div>
+
+    <div class="tier-badges" style="margin-bottom:8px;">
+      <span class="t-badge tier-4">Fixed Price</span>
+      <span class="t-badge tier-2">100 BCAP Anti-Spam Gate</span>
+      <span class="t-badge tier-3">Zero Platform Fee</span>
+    </div>
+
+    <div id="market-list-container">
+      <p class="muted">Loading market listings…</p>
+    </div>
+  </div>`);
+
+  const listContainer = $('#market-list-container', v);
+
+  const loadOrders = async () => {
+    try {
+      const res = await api.getMarketOrders();
+      const orders = res.orders || [];
+      if (orders.length === 0) {
+        listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
+          <p style="margin:4px 0 8px; font-weight:600">No active listings on the trading post!</p>
+          <p class="muted" style="margin:0 0 12px; font-size:12.5px;">List your rare bottlecaps from the Bottlecaps tab to trade peer-to-peer for BTLCAP.</p>
+        </div>`;
+        return;
+      }
+
+      const grid = el(`<div class="market-grid"></div>`);
+      const myAddrs = new Set(state.session.wallet.allAddresses.map((a) => a.toLowerCase()));
+
+      orders.forEach((order) => {
+        const tierId = order.tier || 1;
+        const isMine = myAddrs.has(order.seller_address.toLowerCase());
+        const tile = el(`<div class="market-tile glow-${tierId}">
+          <div class="cap-canvas-wrap" style="width:120px; height:120px; margin:0 auto 6px;">
+            <canvas width="120" height="120"></canvas>
+          </div>
+          <div class="t-badge tier-${tierId}" style="display:inline-block; font-size:10px; margin:2px 0;">
+            ${esc(order.traits?.class_name || RARITY_TIERS[tierId]?.name || 'Common')}
+          </div>
+          <div class="cap-title" style="font-size:13px; font-weight:700;">${esc(order.title || `Card #${order.card_id}`)}</div>
+          <div class="cap-sub" style="font-size:11px;">Serial #${esc(order.serial)}</div>
+          
+          <div class="market-price-tag">💰 ${esc(order.price_caps)} BCAP</div>
+          <div class="market-seller" title="${esc(order.seller_address)}">
+            ${isMine ? '<b style="color:var(--amber2)">Your Listing</b>' : `Lister: ${addrLabel(order.seller_address)}`}
+          </div>
+
+          <div style="margin-top:auto;">
+            ${isMine ?
+              `<button class="btn small" style="width:100%" data-act="cancel-order" data-order-id="${esc(order.order_id)}">Cancel</button>` :
+              `<button class="btn primary small" style="width:100%" data-act="buy-order">Buy Now</button>`
+            }
+          </div>
+        </div>`);
+
+        const cvs = tile.querySelector('canvas');
+        renderCapToCanvas(cvs, {
+          card_id: order.card_id,
+          serial: order.serial,
+          tier: order.tier,
+          traits: order.traits,
+          recipe_hash: order.recipe_hash,
+        });
+
+        tile.addEventListener('click', (e) => {
+          if (e.target.dataset.act === 'cancel-order') {
+            if (confirm(`Cancel listing for Card #${order.card_id}?`)) {
+              api.deleteMarketOrder(order.order_id)
+                .then(() => { toast('Listing cancelled', 'ok'); loadOrders(); })
+                .catch((err) => toast(err.message, 'err'));
+            }
+          } else if (e.target.dataset.act === 'buy-order') {
+            openBuyCardModal(order);
+          }
+        });
+
+        grid.appendChild(tile);
+      });
+
+      listContainer.replaceChildren(grid);
+    } catch (err) {
+      listContainer.innerHTML = `<div class="warn">Failed to load market: ${esc(err.message)}</div>`;
+    }
+  };
+
+  v.addEventListener('click', (e) => {
+    if (e.target.dataset.act === 'market-refresh') {
+      listContainer.innerHTML = '<p class="muted">Refreshing…</p>';
+      loadOrders();
+    }
+  });
+
+  loadOrders();
+  return v;
+}
+
+function openBuyCardModal(order) {
+  const currentBal = state.balanceSats;
+  const priceSats = BigInt(order.price_sats || Math.round(order.price_caps * 1e8));
+  const estTotal = priceSats + 1000n + 3000n; // price + seal + miner fee
+  const canAfford = currentBal >= estTotal;
+
+  const overlay = el(`<div class="cap-modal-overlay">
+    <div class="cap-modal">
+      <button class="modal-close" data-act="close">&times;</button>
+      <div class="cap-hero-render" style="width:140px; height:140px; margin:0 auto 10px;">
+        <canvas width="140" height="140"></canvas>
+      </div>
+      <div style="text-align:center; margin-bottom:12px;">
+        <h2 style="margin:4px 0">${esc(order.title || `Card #${order.card_id}`)}</h2>
+        <div class="muted">Serial #${esc(order.serial)} · Rarity Tier ${order.tier || 1}</div>
+      </div>
+
+      <div class="seal-info" style="font-size:12px; font-family:inherit;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+          <span class="muted">Fixed Price:</span>
+          <b style="color:var(--amber2); font-size:14px;">${esc(order.price_caps)} BTLCAP</b>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+          <span class="muted">To Lister (100%):</span>
+          <b>${esc(order.price_caps)} BTLCAP</b>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+          <span class="muted">Lister Address:</span>
+          <span>${addrLabel(order.seller_address)}</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;">
+          <span class="muted">Your Balance:</span>
+          <b>${satsToCaps(currentBal)} BTLCAP</b>
+        </div>
+      </div>
+
+      ${!canAfford ? `<div class="warn" style="margin-top:10px;">
+        ⚠️ Insufficient BTLCAP balance. You need ${satsToCaps(estTotal)} BCAP to buy this card.
+      </div>` : ''}
+
+      <div class="row" style="margin-top:14px;">
+        <button class="btn primary" data-act="confirm-buy" ${!canAfford ? 'disabled' : ''}>Confirm Purchase (${esc(order.price_caps)} BCAP)</button>
+      </div>
+    </div>
+  </div>`);
+
+  const cvs = overlay.querySelector('canvas');
+  renderCapToCanvas(cvs, {
+    card_id: order.card_id,
+    serial: order.serial,
+    tier: order.tier,
+    traits: order.traits,
+    recipe_hash: order.recipe_hash,
+  });
+
+  overlay.addEventListener('click', async (e) => {
+    if (e.target.dataset.act === 'close' || e.target === overlay) {
+      overlay.remove();
+      return;
+    }
+    if (e.target.dataset.act === 'confirm-buy') {
+      const btn = e.target;
+      btn.disabled = true;
+      btn.textContent = 'Executing atomic swap…';
+
+      try {
+        toast('Fulfilling atomic order slip…');
+        const buyerReceiveAddr = currentReceiveAddr();
+        const buyerChangeAddr = currentReceiveAddr();
+
+        const swapData = market.fulfillOrderSlip({
+          psbtBase64: order.order_slip_psbt,
+          cardId: order.card_id,
+          serial: order.serial,
+          buyerAddress: buyerReceiveAddr,
+          buyerUtxos: state.utxos,
+          wallet: state.session.wallet,
+          changeAddress: buyerChangeAddr,
+          feeRateSatPerVB: 10,
+        });
+
+        toast('Broadcasting atomic swap transaction…');
+        const res = await api.broadcast(swapData.txHex);
+
+        toast(`Atomic Swap Executed! Tx: ${res.txid.slice(0, 12)}…`, 'ok');
+        overlay.remove();
+        refresh();
+        showPanel('tradingpost');
+      } catch (err) {
+        toast(err.message, 'err');
+        btn.disabled = false;
+        btn.textContent = `Confirm Purchase (${order.price_caps} BCAP)`;
+      }
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
+
 function panelBottlecaps() {
   const v = el(`<div class="panel">
     <div class="caps-header">
@@ -713,7 +1060,10 @@ function openCardDetailModal(card) {
           <label>Transfer to Wasteland Address</label>
           <input type="text" id="transfer-to" placeholder="btlcap1... or B...">
         </div>
-        <button class="btn primary" data-act="transfer-send">Transfer Card</button>
+        <div class="row" style="margin-top:10px; gap:8px;">
+          <button class="btn" style="flex:1" data-act="transfer-send">Transfer Card</button>
+          <button class="btn primary" style="flex:1" data-act="open-list-modal">🏷️ List for Sale</button>
+        </div>
       </div>
     </div>
   </div>`);
@@ -722,6 +1072,11 @@ function openCardDetailModal(card) {
   renderCapToCanvas(cvs, card);
 
   overlay.addEventListener('click', async (e) => {
+    if (e.target.dataset.act === 'open-list-modal') {
+      overlay.remove();
+      openListCardModal(card);
+      return;
+    }
     if (e.target.dataset.act === 'close' || e.target === overlay) {
       overlay.remove();
       return;

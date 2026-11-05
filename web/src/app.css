@@ -484,3 +484,45 @@ ul.hist li.h-row:last-child { border-bottom: 0; }
   background: var(--amber);
   color: #0c0803;
 }
+
+/* Trading Post */
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+.market-tile {
+  background: #140e07;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.market-tile:hover {
+  border-color: var(--amber);
+  transform: translateY(-2px);
+}
+.market-price-tag {
+  background: rgba(232, 163, 61, 0.12);
+  border: 1px solid var(--amber);
+  color: var(--amber2);
+  font-weight: 800;
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin: 6px 0;
+  display: inline-block;
+}
+.market-seller {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

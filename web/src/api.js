@@ -60,3 +60,27 @@ export async function saveRecipe(recipeHash, recipe) {
 export async function getRecipe(recipeHash) {
   return get('/api/cards/recipe?hash=' + encodeURIComponent(recipeHash));
 }
+
+export async function getMarketOrders() {
+  return get('/api/market/orders');
+}
+
+export async function postMarketOrder(order) {
+  const r = await fetch('/api/market/orders', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(order),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `post market order failed (${r.status})`);
+  return j;
+}
+
+export async function deleteMarketOrder(orderId) {
+  const r = await fetch('/api/market/orders?order_id=' + encodeURIComponent(orderId), {
+    method: 'DELETE',
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `cancel order failed (${r.status})`);
+  return j;
+}
