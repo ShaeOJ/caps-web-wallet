@@ -317,7 +317,7 @@ function currentReceiveAddr() {
 
 function panelReceive() {
   const addr = currentReceiveAddr();
-  const p = el(`<div class="panel">
+  const p = el(`<div class="panel panel-constrained">
     <img class="qr" alt="address QR" src="${qrDataURL(addr)}">
     <div class="addr" id="addr">${esc(addr)}</div>
     <div class="row">
@@ -344,7 +344,7 @@ function panelSend() {
         .map((c) => `<button class="chip" data-addr="${esc(c.address)}" title="${esc(c.address)}">${esc(c.label)}</button>`)
         .join('')}</div>`
     : '';
-  const p = el(`<div class="panel">
+  const p = el(`<div class="panel panel-constrained">
     <div class="field"><label>Recipient address</label>
       <input id="to" placeholder="${esc(state.net.bech32)}1…" autocomplete="off" spellcheck="false">
       ${chips}</div>
@@ -564,7 +564,7 @@ function panelAddresses() {
         </div>
       </li>`).join('')
     : '<li class="ab-empty muted">No saved addresses yet. Add one below, or save a recipient after you send.</li>';
-  const p = el(`<div class="panel">
+  const p = el(`<div class="panel panel-constrained">
     <ul class="abook">${rows}</ul>
     <div class="ab-add">
       <div class="field"><label>New address</label>
