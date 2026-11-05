@@ -718,7 +718,12 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 			var block struct {
 				Tx []struct {
 					TxID string `json:"txid"`
+					Vin  []struct {
+						TxID string `json:"txid"`
+						Vout uint32 `json:"vout"`
+					} `json:"vin"`
 					Vout []struct {
+						N            int     `json:"n"`
 						Value        float64 `json:"value"`
 						ScriptPubKey struct {
 							Hex     string `json:"hex"`
@@ -732,57 +737,111 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 			}
 
 			for _, tx := range block.Tx {
-				if len(tx.Vout) < 2 {
-					continue
-				}
-				spk0 := tx.Vout[0].ScriptPubKey.Hex
-				idx := strings.Index(spk0, "4341504304")
-				if idx == -1 {
-					continue
-				}
-				payloadHex := spk0[idx:]
-				if len(payloadHex) < 86 {
-					continue
-				}
-				recipeHash := strings.ToLower(payloadHex[22:86])
-				owner := tx.Vout[1].ScriptPubKey.Address
-				utxo := fmt.Sprintf("%s:1", tx.TxID)
+				// 1. Check for Card Minting (OP_FORGE: 4341504304)
+				for vIdx, v := range tx.Vout {
+					spk := v.ScriptPubKey.Hex
+					idx := strings.Index(spk, "4341504304")
+					if idx != -1 && len(tx.Vout) > vIdx+1 {
+						payloadHex := spk[idx:]
+						if len(payloadHex) >= 86 {
+							recipeHash := strings.ToLower(payloadHex[22:86])
+							cardVout := vIdx + 1
+							owner := tx.Vout[cardVout].ScriptPubKey.Address
+							utxo := fmt.Sprintf("%s:%d", tx.TxID, cardVout)
 
-				cid := 9000 + len(forgedCardsCache) + 1
-				if old, exists := forgedCardsCache[utxo]; exists {
-					if oldID, ok := old["card_id"].(int); ok && oldID > 0 {
-						cid = oldID
+							cid := 9000 + len(forgedCardsCache) + 1
+							if old, exists := forgedCardsCache[utxo]; exists {
+								if oldID, ok := old["card_id"].(int); ok && oldID > 0 {
+									cid = oldID
+								}
+							}
+
+							serial := h*100 + int64(len(forgedCardsCache)+1)
+							card := map[string]any{
+								"card_id":       cid,
+								"serial":        serial,
+								"tier":          4,
+								"recipe_hash":   recipeHash,
+								"owner":         owner,
+								"mainnet_owner": owner,
+								"utxo":          utxo,
+								"status":        "ACTIVE",
+								"mint_block":    h,
+								"mint_txid":     tx.TxID,
+								"traits": map[string]any{
+									"base_metal": "gilded_gold",
+									"flutes":     "classic_21",
+									"emblem":     "custom",
+									"wear":       "mint",
+									"glow":       "glow_gold",
+								},
+								"transfers": []any{},
+							}
+							forgedCardsCache[utxo] = card
+						}
 					}
 				}
 
-				serial := h*100 + int64(len(forgedCardsCache)+1)
-				card := map[string]any{
-					"card_id":       cid,
-					"serial":        serial,
-					"tier":          4,
-					"recipe_hash":   recipeHash,
-					"owner":         owner,
-					"mainnet_owner": owner,
-					"utxo":          utxo,
-					"status":        "ACTIVE",
-					"mint_block":    h,
-					"mint_txid":     tx.TxID,
-					"traits": map[string]any{
-						"base_metal": "gilded_gold",
-						"flutes":     "classic_21",
-						"emblem":     "custom",
-						"wear":       "mint",
-						"glow":       "glow_gold",
-					},
-					"transfers": []any{},
+				// 2. Check for Card Transfers & Atomic Swap Settlements (OP_TRANSFER: 4341504302 or spending a card UTXO)
+				var transferredCard map[string]any
+				var oldUtxoKey string
+
+				for _, in := range tx.Vin {
+					inUtxo := fmt.Sprintf("%s:%d", in.TxID, in.Vout)
+					if c, exists := forgedCardsCache[inUtxo]; exists {
+						transferredCard = c
+						oldUtxoKey = inUtxo
+						break
+					}
 				}
-				forgedCardsCache[utxo] = card
+
+				transferVoutIdx := -1
+				for vIdx, v := range tx.Vout {
+					if strings.Contains(v.ScriptPubKey.Hex, "4341504302") {
+						transferVoutIdx = vIdx
+						break
+					}
+				}
+
+				if transferredCard != nil || transferVoutIdx != -1 {
+					targetVout := -1
+					if transferVoutIdx != -1 && len(tx.Vout) > transferVoutIdx+1 {
+						targetVout = transferVoutIdx + 1
+					} else {
+						// Look for card dust seal (0.00001000 BCAP)
+						for vIdx, v := range tx.Vout {
+							if math.Abs(v.Value-0.00001000) < 1e-7 && v.ScriptPubKey.Address != "" {
+								targetVout = vIdx
+								break
+							}
+						}
+					}
+
+					if targetVout != -1 && targetVout < len(tx.Vout) {
+						newOwner := tx.Vout[targetVout].ScriptPubKey.Address
+						newUtxo := fmt.Sprintf("%s:%d", tx.TxID, targetVout)
+
+						if transferredCard != nil {
+							delete(forgedCardsCache, oldUtxoKey)
+							transferredCard["owner"] = newOwner
+							transferredCard["mainnet_owner"] = newOwner
+							transferredCard["utxo"] = newUtxo
+							if trList, ok := transferredCard["transfers"].([]any); ok {
+								transferredCard["transfers"] = append(trList, tx.TxID)
+							} else {
+								transferredCard["transfers"] = []any{tx.TxID}
+							}
+							forgedCardsCache[newUtxo] = transferredCard
+							log.Printf("[CARDS] Transferred card %v to %s (new UTXO %s)", transferredCard["card_id"], newOwner, newUtxo)
+						}
+					}
+				}
 			}
 			lastForgedScanHeight = h + 1
 		}
 	}
 
-	// Mempool scan for unconfirmed forged cards so users see them immediately
+	// Mempool scan for unconfirmed forged or transferred cards
 	rawMempool, err := s.cfg.rpc(ctx, "getrawmempool")
 	if err == nil {
 		var mempoolTxIDs []string
@@ -800,7 +859,12 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 				}
 				var tx struct {
 					TxID string `json:"txid"`
+					Vin  []struct {
+						TxID string `json:"txid"`
+						Vout uint32 `json:"vout"`
+					} `json:"vin"`
 					Vout []struct {
+						N            int     `json:"n"`
 						Value        float64 `json:"value"`
 						ScriptPubKey struct {
 							Hex     string `json:"hex"`
@@ -814,40 +878,42 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 				if len(tx.Vout) < 2 {
 					continue
 				}
-				spk0 := tx.Vout[0].ScriptPubKey.Hex
-				idx := strings.Index(spk0, "4341504304")
-				if idx == -1 {
-					continue
-				}
-				payloadHex := spk0[idx:]
-				if len(payloadHex) < 86 {
-					continue
-				}
-				recipeHash := strings.ToLower(payloadHex[22:86])
-				owner := tx.Vout[1].ScriptPubKey.Address
+				for vIdx, v := range tx.Vout {
+					spk := v.ScriptPubKey.Hex
+					idx := strings.Index(spk, "4341504304")
+					if idx != -1 && len(tx.Vout) > vIdx+1 {
+						payloadHex := spk[idx:]
+						if len(payloadHex) >= 86 {
+							recipeHash := strings.ToLower(payloadHex[22:86])
+							cardVout := vIdx + 1
+							owner := tx.Vout[cardVout].ScriptPubKey.Address
+							cardUtxo := fmt.Sprintf("%s:%d", tx.TxID, cardVout)
 
-				card := map[string]any{
-					"card_id":       9000 + len(forgedCardsCache) + 1,
-					"serial":        (tip+1)*100 + int64(len(forgedCardsCache)+1),
-					"tier":          4,
-					"recipe_hash":   recipeHash,
-					"owner":         owner,
-					"mainnet_owner": owner,
-					"utxo":          utxo,
-					"status":        "ACTIVE",
-					"mint_block":    tip + 1,
-					"mint_txid":     tx.TxID,
-					"pending":       true,
-					"traits": map[string]any{
-						"base_metal": "gilded_gold",
-						"flutes":     "classic_21",
-						"emblem":     "custom",
-						"wear":       "mint",
-						"glow":       "glow_gold",
-					},
-					"transfers": []any{},
+							card := map[string]any{
+								"card_id":       9000 + len(forgedCardsCache) + 1,
+								"serial":        (tip+1)*100 + int64(len(forgedCardsCache)+1),
+								"tier":          4,
+								"recipe_hash":   recipeHash,
+								"owner":         owner,
+								"mainnet_owner": owner,
+								"utxo":          cardUtxo,
+								"status":        "ACTIVE",
+								"mint_block":    tip + 1,
+								"mint_txid":     tx.TxID,
+								"pending":       true,
+								"traits": map[string]any{
+									"base_metal": "gilded_gold",
+									"flutes":     "classic_21",
+									"emblem":     "custom",
+									"wear":       "mint",
+									"glow":       "glow_gold",
+								},
+								"transfers": []any{},
+							}
+							forgedCardsCache[cardUtxo] = card
+						}
+					}
 				}
-				forgedCardsCache[utxo] = card
 			}
 
 			// Clean up any pending cards that are no longer in the mempool
