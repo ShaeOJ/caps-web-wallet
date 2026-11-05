@@ -50,6 +50,7 @@ type config struct {
 	listenAddr               string
 	network                  string
 	recipesDir               string
+	marketDir                string
 }
 
 func envOr(k, def string) string {
@@ -70,6 +71,16 @@ func loadConfig() config {
 	}
 	_ = os.MkdirAll(rDir, 0755)
 
+	mDir := envOr("MARKET_DIR", "")
+	if mDir == "" {
+		if _, err := os.Stat("/root/caps-wallet"); err == nil {
+			mDir = "/root/caps-wallet/market"
+		} else {
+			mDir = "./market"
+		}
+	}
+	_ = os.MkdirAll(mDir, 0755)
+
 	return config{
 		rpcURL:           envOr("CAPS_RPC_URL", "http://127.0.0.1:13667"),
 		rpcUser:          envOr("CAPS_RPC_USER", "rt"),
@@ -85,6 +96,7 @@ func loadConfig() config {
 		listenAddr:        envOr("LISTEN_ADDR", "127.0.0.1:8470"),
 		network:           envOr("NETWORK", "regtest"),
 		recipesDir:        rDir,
+		marketDir:         mDir,
 	}
 }
 
@@ -159,6 +171,42 @@ func (c config) sidechainRPC(ctx context.Context, method string, params ...any) 
 		return nil, fmt.Errorf("sidechain rpc %s: %s (code %d)", method, r.Error.Message, r.Error.Code)
 	}
 	return r.Result, nil
+}
+
+func (c config) checkUTXOUnspent(ctx context.Context, txid string, vout uint32) (bool, error) {
+	raw, err := c.rpc(ctx, "gettxout", txid, vout, true)
+	if err != nil {
+		return false, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (c config) verifyListingTx(ctx context.Context, txid string) (bool, error) {
+	raw, err := c.rpc(ctx, "getrawtransaction", txid, true)
+	if err != nil {
+		return false, err
+	}
+	var tx struct {
+		Vout []struct {
+			ScriptPubKey struct {
+				Hex string `json:"hex"`
+				Asm string `json:"asm"`
+			} `json:"scriptPubKey"`
+		} `json:"vout"`
+	}
+	if err := json.Unmarshal(raw, &tx); err != nil {
+		return false, err
+	}
+	for _, out := range tx.Vout {
+		h := strings.ToLower(out.ScriptPubKey.Hex)
+		if strings.Contains(h, "4341504306") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -933,7 +981,7 @@ func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cards":     cards,
 		"total":     len(cards),
-		"forge_fee": 500.0,
+		"forge_fee": 50.0,
 		"online":    true,
 	})
 }
@@ -986,6 +1034,243 @@ func (s *server) handleGetRecipe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+var marketMu sync.RWMutex
+
+type MarketOrder struct {
+	OrderID       string         `json:"order_id"`
+	CardID        int64          `json:"card_id"`
+	Serial        int64          `json:"serial"`
+	Tier          int            `json:"tier"`
+	Title         string         `json:"title"`
+	RecipeHash    string         `json:"recipe_hash,omitempty"`
+	Traits        map[string]any `json:"traits,omitempty"`
+	PriceCaps     float64        `json:"price_caps"`
+	PriceSats     int64          `json:"price_sats"`
+	SellerAddress string         `json:"seller_address"`
+	CardUTXO      string         `json:"card_utxo"` // txid:vout
+	ListingTxID   string         `json:"listing_txid"`
+	OrderSlipPSBT string         `json:"order_slip_psbt"`
+	CreatedAt     int64          `json:"created_at"`
+	Status        string         `json:"status"` // "active", "sold", "cancelled"
+}
+
+func (s *server) handleGetMarketOrders(w http.ResponseWriter, r *http.Request) {
+	marketMu.RLock()
+	files, err := os.ReadDir(s.cfg.marketDir)
+	marketMu.RUnlock()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"orders": []any{}, "total": 0})
+		return
+	}
+
+	activeOrders := []MarketOrder{}
+	var dirtyListings []string
+
+	for _, f := range files {
+		if !strings.HasSuffix(f.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(s.cfg.marketDir, f.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var ord MarketOrder
+		if err := json.Unmarshal(data, &ord); err != nil {
+			continue
+		}
+
+		if ord.Status != "active" {
+			continue
+		}
+
+		// Verify card UTXO is still unspent
+		parts := strings.Split(ord.CardUTXO, ":")
+		if len(parts) == 2 {
+			vout, err := strconv.ParseUint(parts[1], 10, 32)
+			if err == nil {
+				unspent, err := s.cfg.checkUTXOUnspent(r.Context(), parts[0], uint32(vout))
+				if err == nil && !unspent {
+					ord.Status = "sold"
+					dirtyListings = append(dirtyListings, ord.OrderID)
+					continue
+				}
+			}
+		}
+
+		// Enrich with recipe metadata if custom card
+		if ord.RecipeHash != "" && len(ord.RecipeHash) == 64 {
+			recPath := filepath.Join(s.cfg.recipesDir, strings.ToLower(ord.RecipeHash)+".json")
+			if rb, err := os.ReadFile(recPath); err == nil {
+				var rec struct {
+					Title  string         `json:"title"`
+					Tier   int            `json:"tier"`
+					Traits map[string]any `json:"traits"`
+				}
+				if err := json.Unmarshal(rb, &rec); err == nil {
+					if rec.Title != "" {
+						ord.Title = rec.Title
+					}
+					if rec.Tier > 0 {
+						ord.Tier = rec.Tier
+					}
+					if rec.Traits != nil {
+						if ord.Traits == nil {
+							ord.Traits = make(map[string]any)
+						}
+						for k, v := range rec.Traits {
+							ord.Traits[k] = v
+						}
+					}
+				}
+			}
+		}
+
+		activeOrders = append(activeOrders, ord)
+	}
+
+	if len(dirtyListings) > 0 {
+		go func(orders []string) {
+			marketMu.Lock()
+			defer marketMu.Unlock()
+			for _, id := range orders {
+				p := filepath.Join(s.cfg.marketDir, id+".json")
+				_ = os.Remove(p)
+			}
+		}(dirtyListings)
+	}
+
+	sort.Slice(activeOrders, func(i, j int) bool {
+		return activeOrders[i].CreatedAt > activeOrders[j].CreatedAt
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orders": activeOrders,
+		"total":  len(activeOrders),
+	})
+}
+
+func (s *server) handlePostMarketOrder(w http.ResponseWriter, r *http.Request) {
+	var body MarketOrder
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	body.SellerAddress = strings.TrimSpace(body.SellerAddress)
+	if !validAddr(body.SellerAddress) {
+		writeErr(w, http.StatusBadRequest, "invalid seller_address")
+		return
+	}
+
+	body.CardUTXO = strings.TrimSpace(body.CardUTXO)
+	parts := strings.Split(body.CardUTXO, ":")
+	if len(parts) != 2 || len(parts[0]) != 64 || !isHex(parts[0]) {
+		writeErr(w, http.StatusBadRequest, "invalid card_utxo (must be txid:vout)")
+		return
+	}
+	vout, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid card_utxo vout")
+		return
+	}
+
+	if body.PriceCaps <= 0 {
+		writeErr(w, http.StatusBadRequest, "price_caps must be greater than 0")
+		return
+	}
+	body.PriceSats = int64(math.Round(body.PriceCaps * 1e8))
+
+	if strings.TrimSpace(body.OrderSlipPSBT) == "" {
+		writeErr(w, http.StatusBadRequest, "missing order_slip_psbt")
+		return
+	}
+
+	unspent, err := s.cfg.checkUTXOUnspent(r.Context(), parts[0], uint32(vout))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "failed to verify card utxo: "+err.Error())
+		return
+	}
+	if !unspent {
+		writeErr(w, http.StatusBadRequest, "card utxo is already spent")
+		return
+	}
+
+	body.ListingTxID = strings.TrimSpace(body.ListingTxID)
+	if body.ListingTxID != "" {
+		if len(body.ListingTxID) != 64 || !isHex(body.ListingTxID) {
+			writeErr(w, http.StatusBadRequest, "invalid listing_txid")
+			return
+		}
+		hasOpList, err := s.cfg.verifyListingTx(r.Context(), body.ListingTxID)
+		if err != nil {
+			log.Printf("listing tx verification notice: %v", err)
+		} else if !hasOpList {
+			writeErr(w, http.StatusBadRequest, "listing_txid does not contain valid OP_LIST")
+			return
+		}
+	}
+
+	body.OrderID = fmt.Sprintf("ord_%s_%d", parts[0][:16], vout)
+	body.CreatedAt = time.Now().Unix()
+	body.Status = "active"
+
+	marketMu.Lock()
+	defer marketMu.Unlock()
+
+	_ = os.MkdirAll(s.cfg.marketDir, 0755)
+	filePath := filepath.Join(s.cfg.marketDir, body.OrderID+".json")
+	data, err := json.MarshalIndent(body, "", "  ")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to serialize order")
+		return
+	}
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to persist order")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"order": body,
+	})
+}
+
+func (s *server) handleDeleteMarketOrder(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(r.URL.Query().Get("order_id"))
+	if orderID == "" {
+		var body struct {
+			OrderID string `json:"order_id"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body)
+		orderID = strings.TrimSpace(body.OrderID)
+	}
+	if orderID == "" {
+		writeErr(w, http.StatusBadRequest, "missing order_id")
+		return
+	}
+
+	if strings.Contains(orderID, "/") || strings.Contains(orderID, "\\") || strings.Contains(orderID, "..") {
+		writeErr(w, http.StatusBadRequest, "invalid order_id")
+		return
+	}
+
+	marketMu.Lock()
+	defer marketMu.Unlock()
+
+	filePath := filepath.Join(s.cfg.marketDir, orderID+".json")
+	if err := os.Remove(filePath); err != nil {
+		if os.IsNotExist(err) {
+			writeErr(w, http.StatusNotFound, "order not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "failed to delete order")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *server) handleSidechainInfo(w http.ResponseWriter, r *http.Request) {
@@ -1050,6 +1335,9 @@ func main() {
 	mux.HandleFunc("GET /api/cards", s.handleCards)
 	mux.HandleFunc("POST /api/cards/recipe", s.handleSaveRecipe)
 	mux.HandleFunc("GET /api/cards/recipe", s.handleGetRecipe)
+	mux.HandleFunc("GET /api/market/orders", s.handleGetMarketOrders)
+	mux.HandleFunc("POST /api/market/orders", s.handlePostMarketOrder)
+	mux.HandleFunc("DELETE /api/market/orders", s.handleDeleteMarketOrder)
 	mux.HandleFunc("GET /api/sidechain/info", s.handleSidechainInfo)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := cfg.rpc(r.Context(), "getblockcount"); err != nil {
