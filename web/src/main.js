@@ -630,8 +630,8 @@ function panelBottlecaps() {
     if (state.cards.length === 0) {
       listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
         <p style="margin:4px 0 8px; font-weight:600">No bottlecaps discovered yet!</p>
-        <p class="muted" style="margin:0 0 12px; font-size:12.5px;">Mine BTLCAP blocks on the pool to win card drops, or spend 500 BCAP to forge your own custom cap.</p>
-        <button class="btn primary small" data-act="forge-open">Forge Your First Cap (500 BCAP)</button>
+        <p class="muted" style="margin:0 0 12px; font-size:12.5px;">Mine BTLCAP blocks on the pool to win card drops, or spend 50 BCAP to forge your own custom cap.</p>
+        <button class="btn primary small" data-act="forge-open">Forge Your First Cap (50 BCAP)</button>
       </div>`;
       return;
     }
@@ -783,7 +783,7 @@ function openForgeStudioModal() {
       <div style="text-align:center">
         <h2 style="margin:0 0 4px">🔨 Forge Custom Cap</h2>
         <p class="muted" style="margin:0 0 10px; font-size:12.5px;">Mint your own custom bottlecap design permanently into the blockchain.</p>
-        <span class="burn-cost-pill">Burn Fee: 500 BCAP</span>
+        <span class="burn-cost-pill">Burn Fee: 50 BCAP</span>
       </div>
 
       <div class="forge-preview">
@@ -890,9 +890,9 @@ function openForgeStudioModal() {
 
       <div class="review" style="margin-top:16px">
         <div class="line"><span>Wallet Balance:</span> <b>${satsToCaps(currentBal)} BCAP</b></div>
-        <div class="line"><span>Required Burn:</span> <b style="color:var(--err)">500.00000000 BCAP</b></div>
+        <div class="line"><span>Required Burn:</span> <b style="color:var(--err)">50.00000000 BCAP</b></div>
         <button class="btn primary" id="btn-forge" ${canAfford ? '' : 'disabled'}>
-          ${canAfford ? 'Forge into Chain (Burn 500 BCAP)' : 'Insufficient BCAP (500 Required)'}
+          ${canAfford ? 'Forge into Chain (Burn 50 BCAP)' : 'Insufficient BCAP (50 Required)'}
         </button>
       </div>
     </div>
@@ -1165,7 +1165,7 @@ function openForgeStudioModal() {
       return;
     }
     if (e.target.id === 'btn-forge') {
-      if (!canAfford) return toast('Insufficient BCAP balance (500 required)', 'err');
+      if (!canAfford) return toast('Insufficient BCAP balance (50 required)', 'err');
       if (artMode === 'draw' && customStrokes.length === 0) {
         return toast('Please draw an emblem on the pad before forging', 'err');
       }
@@ -1175,7 +1175,7 @@ function openForgeStudioModal() {
 
       const recipe = updatePreview();
       try {
-        toast('Building 500 BCAP burn transaction…');
+        toast('Building 50 BCAP burn transaction…');
         const creatorAddr = currentReceiveAddr();
         const changeAddr = currentReceiveAddr();
 
@@ -1198,7 +1198,7 @@ function openForgeStudioModal() {
 
         toast('Broadcasting custom forge to chain…');
         const res = await api.broadcast(txData.hex);
-        toast('Custom Cap Forged! Tx: ' + res.txid.slice(0, 12) + '... (500 BCAP burned)', 'ok');
+        toast('Custom Cap Forged! Tx: ' + res.txid.slice(0, 12) + '... (50 BCAP burned)', 'ok');
         const optimisticCard = {
           card_id: Date.now(),
           serial: Math.floor(Date.now() / 1000),

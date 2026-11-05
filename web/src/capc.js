@@ -11,7 +11,7 @@ import { capsToSats, DUST_SATS } from './wallet.js';
 export const CAPC_MAGIC = new Uint8Array([0x43, 0x41, 0x50, 0x43]); // 'CAPC'
 export const OP_TRANSFER = 0x02;
 export const OP_FORGE = 0x04;
-export const FORGE_FEE_SATS = 50000000000n; // 500 BCAP in satoshis
+export const FORGE_FEE_SATS = 5000000000n; // 50 BCAP in satoshis
 
 /**
  * Encodes a 14-byte OP_TRANSFER payload.
@@ -196,7 +196,7 @@ export function buildForgeCapTx({
 
   const fee = feeRate * BigInt(68 * chosen.length + 120);
   if (sum < target + fee) {
-    throw new Error(`Insufficient funds to forge cap. 500 BCAP + fee required, available: ${(Number(sum) / 1e8).toFixed(4)} BCAP.`);
+    throw new Error(`Insufficient funds to forge cap. 50 BCAP + fee required, available: ${(Number(sum) / 1e8).toFixed(4)} BCAP.`);
   }
 
   let change = sum - target - fee;
