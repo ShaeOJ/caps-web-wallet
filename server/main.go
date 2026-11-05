@@ -632,6 +632,99 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+var (
+	forgedCardsMu        sync.RWMutex
+	forgedCardsCache     = make(map[string]map[string]any)
+	lastForgedScanHeight int64 = 5290
+)
+
+func (s *server) syncMainnetForgedCards(ctx context.Context) {
+	forgedCardsMu.Lock()
+	defer forgedCardsMu.Unlock()
+
+	rawTip, err := s.cfg.rpc(ctx, "getblockcount")
+	if err != nil {
+		return
+	}
+	var tip int64
+	if err := json.Unmarshal(rawTip, &tip); err != nil || tip < lastForgedScanHeight {
+		return
+	}
+
+	start := lastForgedScanHeight
+	for h := start; h <= tip; h++ {
+		rawHash, err := s.cfg.rpc(ctx, "getblockhash", h)
+		if err != nil {
+			break
+		}
+		var bhash string
+		if err := json.Unmarshal(rawHash, &bhash); err != nil {
+			break
+		}
+		rawBlock, err := s.cfg.rpc(ctx, "getblock", bhash, 2)
+		if err != nil {
+			break
+		}
+		var block struct {
+			Tx []struct {
+				TxID string `json:"txid"`
+				Vout []struct {
+					Value        float64 `json:"value"`
+					ScriptPubKey struct {
+						Hex     string `json:"hex"`
+						Address string `json:"address"`
+					} `json:"scriptPubKey"`
+				} `json:"vout"`
+			} `json:"tx"`
+		}
+		if err := json.Unmarshal(rawBlock, &block); err != nil {
+			break
+		}
+
+		for _, tx := range block.Tx {
+			if len(tx.Vout) < 2 {
+				continue
+			}
+			spk0 := tx.Vout[0].ScriptPubKey.Hex
+			idx := strings.Index(spk0, "4341504304")
+			if idx == -1 {
+				continue
+			}
+			payloadHex := spk0[idx:]
+			if len(payloadHex) < 86 {
+				continue
+			}
+			recipeHash := strings.ToLower(payloadHex[22:86])
+			owner := tx.Vout[1].ScriptPubKey.Address
+			utxo := fmt.Sprintf("%s:1", tx.TxID)
+
+			serial := h*100 + int64(len(forgedCardsCache)+1)
+			card := map[string]any{
+				"card_id":       9000 + len(forgedCardsCache) + 1,
+				"serial":        serial,
+				"tier":          4,
+				"recipe_hash":   recipeHash,
+				"owner":         owner,
+				"mainnet_owner": owner,
+				"utxo":          utxo,
+				"status":        "ACTIVE",
+				"mint_block":    h,
+				"mint_txid":     tx.TxID,
+				"traits": map[string]any{
+					"base_metal": "gilded_gold",
+					"flutes":     "classic_21",
+					"emblem":     "custom",
+					"wear":       "mint",
+					"glow":       "glow_gold",
+				},
+				"transfers": []any{},
+			}
+			forgedCardsCache[utxo] = card
+		}
+		lastForgedScanHeight = h + 1
+	}
+}
+
 func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 	addrsParam := r.URL.Query().Get("addresses")
 	var addrs []string
@@ -644,35 +737,56 @@ func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 1. Sync mainnet forged cards
+	s.syncMainnetForgedCards(r.Context())
+
+	// 2. Fetch sidechain AuxPoW mined drops
+	var cards []map[string]any
 	res, err := s.cfg.sidechainRPC(r.Context(), "getcards", addrs)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"cards":     []any{},
-			"total":     0,
-			"forge_fee": 500.0,
-			"online":    false,
-			"error":     err.Error(),
-		})
-		return
+	if err == nil {
+		var data struct {
+			Cards []map[string]any `json:"cards"`
+		}
+		if err := json.Unmarshal(res, &data); err == nil {
+			cards = data.Cards
+		}
 	}
 
-	var data struct {
-		Cards    []map[string]any `json:"cards"`
-		Total    int              `json:"total"`
-		ForgeFee float64          `json:"forge_fee"`
-	}
-	if err := json.Unmarshal(res, &data); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"cards":     []any{},
-			"total":     0,
-			"forge_fee": 500.0,
-			"online":    false,
-		})
-		return
+	// 3. Append matching mainnet forged cards
+	filterMap := make(map[string]bool)
+	for _, a := range addrs {
+		filterMap[strings.ToLower(a)] = true
 	}
 
-	// Enrich cards with custom recipe artwork if available
-	for _, card := range data.Cards {
+	forgedCardsMu.RLock()
+	for _, fc := range forgedCardsCache {
+		owner, _ := fc["owner"].(string)
+		mOwner, _ := fc["mainnet_owner"].(string)
+		if len(addrs) > 0 {
+			if !filterMap[strings.ToLower(owner)] && !filterMap[strings.ToLower(mOwner)] {
+				continue
+			}
+		}
+		// Avoid duplicate by UTXO
+		found := false
+		for _, c := range cards {
+			if c["utxo"] == fc["utxo"] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cloned := make(map[string]any)
+			for k, v := range fc {
+				cloned[k] = v
+			}
+			cards = append(cards, cloned)
+		}
+	}
+	forgedCardsMu.RUnlock()
+
+	// 4. Enrich all cards with custom recipe artwork if available on disk
+	for _, card := range cards {
 		rHash, ok := card["recipe_hash"].(string)
 		if !ok || len(rHash) != 64 {
 			continue
@@ -680,25 +794,57 @@ func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 		path := filepath.Join(s.cfg.recipesDir, strings.ToLower(rHash)+".json")
 		if b, err := os.ReadFile(path); err == nil {
 			var rec struct {
+				Title  string         `json:"title"`
+				Tier   int            `json:"tier"`
 				Traits map[string]any `json:"traits"`
 			}
-			if err := json.Unmarshal(b, &rec); err == nil && rec.Traits != nil {
-				cTraits, _ := card["traits"].(map[string]any)
-				if cTraits == nil {
-					cTraits = map[string]any{}
+			if err := json.Unmarshal(b, &rec); err == nil {
+				if rec.Title != "" {
+					card["title"] = rec.Title
 				}
-				for k, v := range rec.Traits {
-					cTraits[k] = v
+				if rec.Tier > 0 {
+					card["tier"] = rec.Tier
 				}
-				card["traits"] = cTraits
+				if rec.Traits != nil {
+					cTraits, _ := card["traits"].(map[string]any)
+					if cTraits == nil {
+						cTraits = map[string]any{}
+					}
+					for k, v := range rec.Traits {
+						cTraits[k] = v
+					}
+					card["traits"] = cTraits
+				}
 			}
 		}
 	}
 
+	// 5. Sort newest first by serial
+	sort.Slice(cards, func(i, j int) bool {
+		var si, sj int64
+		switch v := cards[i]["serial"].(type) {
+		case int64:
+			si = v
+		case int:
+			si = int64(v)
+		case float64:
+			si = int64(v)
+		}
+		switch v := cards[j]["serial"].(type) {
+		case int64:
+			sj = v
+		case int:
+			sj = int64(v)
+		case float64:
+			sj = int64(v)
+		}
+		return si > sj
+	})
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cards":     data.Cards,
-		"total":     data.Total,
-		"forge_fee": data.ForgeFee,
+		"cards":     cards,
+		"total":     len(cards),
+		"forge_fee": 500.0,
 		"online":    true,
 	})
 }

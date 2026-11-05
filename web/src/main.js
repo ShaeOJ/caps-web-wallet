@@ -1169,7 +1169,22 @@ function openForgeStudioModal() {
 
         toast('Broadcasting custom forge to chain…');
         const res = await api.broadcast(txData.hex);
-        toast(`Custom Cap Forged! Tx: ${res.txid.slice(0, 12)}… (500 BCAP burned)`, 'ok');
+        toast('Custom Cap Forged! Tx: ' + res.txid.slice(0, 12) + '... (500 BCAP burned)', 'ok');
+        const optimisticCard = {
+          card_id: Date.now(),
+          serial: Math.floor(Date.now() / 1000),
+          tier: recipe.tier || 4,
+          recipe_hash: txData.recipeHash || '',
+          owner: creatorAddr,
+          mainnet_owner: creatorAddr,
+          utxo: res.txid + ':1',
+          status: 'ACTIVE',
+          mint_block: 0,
+          mint_txid: res.txid,
+          traits: recipe.traits,
+          transfers: []
+        };
+        state.cards = [optimisticCard, ...state.cards];
         overlay.remove();
         refresh();
       } catch (err) {
