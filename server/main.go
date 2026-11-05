@@ -28,6 +28,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -413,7 +414,7 @@ func (s *server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Hex string `json:"hex"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 128<<10)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -991,7 +992,7 @@ func (s *server) handleSaveRecipe(w http.ResponseWriter, r *http.Request) {
 		RecipeHash string         `json:"recipe_hash"`
 		Recipe     map[string]any `json:"recipe"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 5<<20)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 512<<10)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1154,7 +1155,7 @@ func (s *server) handleGetMarketOrders(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handlePostMarketOrder(w http.ResponseWriter, r *http.Request) {
 	var body MarketOrder
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 128<<10)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1300,7 +1301,107 @@ func isHex(s string) bool {
 	return true
 }
 
+// ---- rate limiting middleware ----------------------------------------------
+
+type clientBucket struct {
+	generalCount   int
+	broadcastCount int
+	scanCount      int
+	recipeCount    int
+	windowStart    time.Time
+}
+
+type rateLimiter struct {
+	mu        sync.Mutex
+	clients   map[string]*clientBucket
+	lastClean time.Time
+}
+
+var limiter = &rateLimiter{
+	clients:   make(map[string]*clientBucket),
+	lastClean: time.Now(),
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		ip := strings.TrimSpace(parts[0])
+		if ip != "" {
+			return ip
+		}
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return strings.TrimSpace(xrip)
+	}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return ip
+	}
+	return r.RemoteAddr
+}
+
+func (l *rateLimiter) allow(ip string, path string, method string) (bool, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+	// Periodic cleanup of stale client buckets every 5 minutes
+	if now.Sub(l.lastClean) > 5*time.Minute {
+		for k, b := range l.clients {
+			if now.Sub(b.windowStart) > 10*time.Minute {
+				delete(l.clients, k)
+			}
+		}
+		l.lastClean = now
+	}
+
+	b, exists := l.clients[ip]
+	if !exists || now.Sub(b.windowStart) > time.Minute {
+		b = &clientBucket{windowStart: now}
+		l.clients[ip] = b
+	}
+
+	b.generalCount++
+	if b.generalCount > 150 {
+		return false, "General rate limit exceeded (max 150 req/min)"
+	}
+
+	if strings.HasPrefix(path, "/api/broadcast") && method == http.MethodPost {
+		b.broadcastCount++
+		if b.broadcastCount > 15 {
+			return false, "Broadcast rate limit exceeded (max 15 req/min)"
+		}
+	} else if strings.HasPrefix(path, "/api/utxos") {
+		b.scanCount++
+		if b.scanCount > 40 {
+			return false, "UTXO scan rate limit exceeded (max 40 req/min)"
+		}
+	} else if strings.HasPrefix(path, "/api/cards/recipe") && method == http.MethodPost {
+		b.recipeCount++
+		if b.recipeCount > 25 {
+			return false, "Recipe submission rate limit exceeded (max 25 req/min)"
+		}
+	}
+
+	return true, ""
+}
+
+func rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/health" {
+			ip := clientIP(r)
+			if ok, reason := limiter.allow(ip, r.URL.Path, r.Method); !ok {
+				w.Header().Set("Retry-After", "30")
+				writeErr(w, http.StatusTooManyRequests, reason)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // ---- security headers + static ---------------------------------------------
+
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1313,6 +1414,8 @@ func securityHeaders(next http.Handler) http.Handler {
 				"img-src 'self' data:; connect-src 'self'; font-src 'self'; "+
 				"base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
@@ -1351,7 +1454,7 @@ func main() {
 		mux.Handle("GET /", http.FileServer(http.Dir(cfg.webDir)))
 	}
 
-	handler := securityHeaders(mux)
+	handler := rateLimit(securityHeaders(mux))
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,
 		Handler:           handler,

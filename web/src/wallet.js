@@ -33,6 +33,9 @@ export function openWallet(mnemonic, net, count = GAP_LIMIT) {
   const receive = [];
   const change = [];
 
+  // Immediately wipe master seed bytes from memory
+  seed.fill(0);
+
   for (const chain of [0, 1]) {
     for (let i = 0; i < count; i++) {
       const node = root.derive(pathFor(chain, i));
@@ -49,6 +52,16 @@ export function openWallet(mnemonic, net, count = GAP_LIMIT) {
     allAddresses: [...byAddress.keys()],
     keyFor: (addr) => byAddress.get(addr),
     scriptFor: (addr) => byAddress.get(addr)?.script,
+    wipe: () => {
+      for (const entry of byAddress.values()) {
+        if (entry.priv && entry.priv.fill) {
+          entry.priv.fill(0);
+        }
+      }
+      byAddress.clear();
+      receive.length = 0;
+      change.length = 0;
+    },
   };
 }
 
@@ -61,7 +74,10 @@ const SCRYPT = { N: 1 << 17, r: 8, p: 1, dkLen: 32, maxmem: 256 * 1024 * 1024 };
 async function deriveKey(password, salt, params = SCRYPT) {
   const pw = new TextEncoder().encode(password);
   const raw = await scryptAsync(pw, salt, params);
-  return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  pw.fill(0);
+  const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  raw.fill(0);
+  return key;
 }
 
 export async function encryptSeed(mnemonic, password) {
@@ -70,6 +86,7 @@ export async function encryptSeed(mnemonic, password) {
   const key = await deriveKey(password, salt, SCRYPT);
   const pt = new TextEncoder().encode(mnemonic.trim().replace(/\s+/g, ' '));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt));
+  pt.fill(0);
   // KDF params are stored so tuning them later never strands an existing vault.
   return {
     v: 2,
@@ -120,6 +137,7 @@ function estVsize(nIn, nOut) {
 // Defensive clamp: even if the server reports a pathological fee rate, never
 // build a tx above this. The confirm screen also shows the fee to the user.
 const MAX_FEERATE = 10000; // sat/vByte
+export const MAX_SAFE_FEE_SATS = 10_000_000n; // 0.10 BCAP maximum defensive fee cap
 
 // utxos: [{txid, vout, amount(float CAPS), address}]
 // sendMax: ignore amountSats and sweep the whole balance (minus fee) to toAddress.
@@ -155,6 +173,9 @@ export function buildTx({ wallet, utxos, toAddress, amountSats, feeRateSatPerVB,
       if (sum >= target + feeRate * BigInt(estVsize(chosen.length, 2))) break;
     }
     fee = feeRate * BigInt(estVsize(chosen.length, 2));
+    if (fee > MAX_SAFE_FEE_SATS) {
+      throw new Error(`Calculated fee exceeds defensive limit (${satsToCaps(MAX_SAFE_FEE_SATS)} BCAP). Aborting.`);
+    }
     change = sum - target - fee;
     withChange = true;
     if (change < DUST_SATS) {

@@ -51,6 +51,9 @@ function qrDataURL(text) {
 }
 
 function lock() {
+  if (state.session?.wallet?.wipe) {
+    try { state.session.wallet.wipe(); } catch (_) {}
+  }
   state.session = null;
   state.utxos = [];
   state.balanceSats = 0n;
@@ -64,6 +67,33 @@ function armIdle() {
 }
 ['click', 'keydown', 'mousemove', 'touchstart'].forEach((e) =>
   window.addEventListener(e, () => { if (state.session) armIdle(); }, { passive: true }));
+
+// Defensive memory zeroization on unload / pagehide
+window.addEventListener('pagehide', () => {
+  if (state.session?.wallet?.wipe) {
+    try { state.session.wallet.wipe(); } catch (_) {}
+  }
+});
+window.addEventListener('beforeunload', () => {
+  if (state.session?.wallet?.wipe) {
+    try { state.session.wallet.wipe(); } catch (_) {}
+  }
+});
+
+// Auto-lock when tab is hidden in background for >60s
+let backgroundTimer = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    if (state.session) {
+      backgroundTimer = setTimeout(lock, 60 * 1000);
+    }
+  } else {
+    if (backgroundTimer) {
+      clearTimeout(backgroundTimer);
+      backgroundTimer = null;
+    }
+  }
+});
 
 // ---- boot ------------------------------------------------------------------
 
@@ -208,6 +238,9 @@ async function finalizeNew(mnemonic, password) {
 
 // ---- locked ----------------------------------------------------------------
 
+let failedUnlockAttempts = 0;
+let unlockCooldownUntil = 0;
+
 function viewLocked() {
   const v = el(`<div class="card hero-card">
     <img class="brand-logo" src="/caps-logo.png" alt="BTLCAP bottle-cap logo" width="96" height="96">
@@ -215,20 +248,61 @@ function viewLocked() {
     <p class="catch">Welcome back to the wasteland.</p>
     <p class="muted">Enter your password to unlock.</p>
     <div class="field"><input type="password" id="pw" placeholder="password" autocomplete="current-password"></div>
+    <div id="cooldown-msg" class="warn" style="display:none; margin-top:10px;"></div>
     <div class="row">
-      <button class="btn primary" data-act="unlock">Unlock</button>
+      <button class="btn primary" data-act="unlock" id="unlock-btn">Unlock</button>
     </div>
     <p class="net"><a href="#" data-act="forget">Forget wallet on this device</a></p>
   </div>`);
+
+  const btn = $('#unlock-btn', v);
+  const cdMsg = $('#cooldown-msg', v);
+
+  const checkCooldown = () => {
+    const remainingMs = unlockCooldownUntil - Date.now();
+    if (remainingMs > 0) {
+      const sec = Math.ceil(remainingMs / 1000);
+      btn.disabled = true;
+      btn.textContent = `Locked (${sec}s)`;
+      cdMsg.style.display = 'block';
+      cdMsg.textContent = `Too many failed attempts. Cooldown: ${sec}s`;
+      setTimeout(checkCooldown, 1000);
+      return true;
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Unlock';
+      cdMsg.style.display = 'none';
+      return false;
+    }
+  };
+
   const unlock = async () => {
+    if (checkCooldown()) return;
+    const pwVal = $('#pw', v).value;
+    if (!pwVal) return toast('Enter your password', 'err');
+
+    btn.disabled = true;
+    btn.textContent = 'Decrypting…';
+
     try {
-      const mnemonic = await decryptSeed(state.vault, $('#pw', v).value);
+      const mnemonic = await decryptSeed(state.vault, pwVal);
+      failedUnlockAttempts = 0;
+      unlockCooldownUntil = 0;
       state.session = { mnemonic, wallet: openWallet(mnemonic, state.net) };
       state.recvIndex = state.vault.recvIndex || 0;
       armIdle();
       render();
       refresh();
     } catch {
+      failedUnlockAttempts++;
+      const penaltySec = failedUnlockAttempts >= 6 ? 30 : failedUnlockAttempts >= 4 ? 10 : failedUnlockAttempts >= 3 ? 3 : 0;
+      if (penaltySec > 0) {
+        unlockCooldownUntil = Date.now() + penaltySec * 1000;
+        checkCooldown();
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'Unlock';
+      }
       toast('Wrong password', 'err');
     }
   };
