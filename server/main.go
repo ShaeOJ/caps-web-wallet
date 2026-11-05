@@ -356,6 +356,96 @@ func decodeScan(raw json.RawMessage) (scanResult, error) {
 	return sr, nil
 }
 
+func (s *server) applyMempool(ctx context.Context, addrs []string, sr *scanResult) {
+	rawMempool, err := s.cfg.rpc(ctx, "getrawmempool")
+	if err != nil {
+		return
+	}
+	var mempoolTxIDs []string
+	if err := json.Unmarshal(rawMempool, &mempoolTxIDs); err != nil || len(mempoolTxIDs) == 0 {
+		return
+	}
+
+	addrSet := make(map[string]bool, len(addrs))
+	for _, a := range addrs {
+		addrSet[a] = true
+	}
+
+	spentOutpoints := make(map[string]bool)
+	var mempoolOutputs []utxo
+
+	for _, txid := range mempoolTxIDs {
+		rawTx, err := s.cfg.rpc(ctx, "getrawtransaction", txid, 1)
+		if err != nil {
+			continue
+		}
+		var tx struct {
+			TxID string `json:"txid"`
+			Vin  []struct {
+				TxID string `json:"txid"`
+				Vout uint32 `json:"vout"`
+			} `json:"vin"`
+			Vout []struct {
+				N            uint32  `json:"n"`
+				Value        float64 `json:"value"`
+				ScriptPubKey struct {
+					Hex       string   `json:"hex"`
+					Address   string   `json:"address"`
+					Addresses []string `json:"addresses"`
+				} `json:"scriptPubKey"`
+			} `json:"vout"`
+		}
+		if err := json.Unmarshal(rawTx, &tx); err != nil {
+			continue
+		}
+
+		for _, in := range tx.Vin {
+			spentOutpoints[fmt.Sprintf("%s:%d", in.TxID, in.Vout)] = true
+		}
+
+		for _, out := range tx.Vout {
+			targetAddr := out.ScriptPubKey.Address
+			if targetAddr == "" && len(out.ScriptPubKey.Addresses) > 0 {
+				targetAddr = out.ScriptPubKey.Addresses[0]
+			}
+			if targetAddr != "" && addrSet[targetAddr] {
+				mempoolOutputs = append(mempoolOutputs, utxo{
+					TxID:    tx.TxID,
+					Vout:    out.N,
+					Amount:  out.Value,
+					Height:  0, // 0 = unconfirmed mempool
+					Script:  out.ScriptPubKey.Hex,
+					Address: targetAddr,
+					Desc:    fmt.Sprintf("addr(%s)", targetAddr),
+				})
+			}
+		}
+	}
+
+	var validUnspents []utxo
+	for _, u := range sr.Unspents {
+		outpoint := fmt.Sprintf("%s:%d", u.TxID, u.Vout)
+		if !spentOutpoints[outpoint] {
+			validUnspents = append(validUnspents, u)
+		}
+	}
+
+	for _, mu := range mempoolOutputs {
+		outpoint := fmt.Sprintf("%s:%d", mu.TxID, mu.Vout)
+		if !spentOutpoints[outpoint] {
+			validUnspents = append(validUnspents, mu)
+		}
+	}
+
+	var newTotal float64
+	for _, u := range validUnspents {
+		newTotal += u.Amount
+	}
+
+	sr.Unspents = validUnspents
+	sr.TotalAmount = math.Round(newTotal*1e8) / 1e8
+}
+
 func (s *server) handleUTXOs(w http.ResponseWriter, r *http.Request) {
 	addrs, ok := parseAddrs(r)
 	if !ok {
@@ -367,6 +457,7 @@ func (s *server) handleUTXOs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	s.applyMempool(r.Context(), addrs, &sr)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"balance": sr.TotalAmount,
 		"utxos":   sr.Unspents,
@@ -384,6 +475,7 @@ func (s *server) handleBalance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	s.applyMempool(r.Context(), addrs, &sr)
 	writeJSON(w, http.StatusOK, map[string]any{"balance": sr.TotalAmount})
 }
 

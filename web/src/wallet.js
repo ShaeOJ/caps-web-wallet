@@ -145,6 +145,7 @@ export const MAX_SAFE_FEE_SATS = 10_000_000n; // 0.10 BCAP maximum defensive fee
 export function buildTx({ wallet, utxos, toAddress, amountSats, feeRateSatPerVB, changeAddress, sendMax = false }) {
   const net = wallet.net;
   const spendable = utxos
+    .filter((u) => capsToSats(u.amount) > 1000n) // protect single-use card dust seals (1000 sats)
     .map((u) => ({ ...u, sats: capsToSats(u.amount) }))
     .sort((a, b) => (a.sats < b.sats ? 1 : -1)); // largest first
   if (spendable.length === 0) throw new Error('no spendable funds');

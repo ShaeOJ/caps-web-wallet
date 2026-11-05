@@ -178,8 +178,9 @@ export function buildForgeCapTx({
   const feeRate = BigInt(Math.max(1, Math.ceil(feeRateSatPerVB)));
   const { hashBytes, hashHex } = computeRecipeHash(recipe);
 
-  // Gather UTXOs to cover 500 BCAP + dust + fee
+  // Gather UTXOs to cover 50 BCAP + dust + fee (protecting 1000 sat card dust seals)
   const spendable = utxos
+    .filter((u) => capsToSats(u.amount) > 1000n)
     .map((u) => ({ ...u, sats: capsToSats(u.amount) }))
     .sort((a, b) => (a.sats < b.sats ? 1 : -1));
 
