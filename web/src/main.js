@@ -1320,6 +1320,8 @@ function openForgeStudioModal() {
       <div class="review" style="margin-top:16px">
         <div class="line"><span>Wallet Balance:</span> <b>${satsToCaps(currentBal)} BCAP</b></div>
         <div class="line"><span>Required Burn:</span> <b style="color:var(--err)">50.00000000 BCAP</b></div>
+        <div class="line" id="fg-quota-line"><span>Forge Quota:</span> <b id="fg-quota-text" style="color:var(--accent)">Checking limits…</b></div>
+        <div id="fg-limit-warning" class="warn" style="display:none; margin:8px 0; font-size:12px; line-height:1.4;"></div>
         <button class="btn primary" id="btn-forge" ${canAfford ? '' : 'disabled'}>
           ${canAfford ? 'Forge into Chain (Burn 50 BCAP)' : 'Insufficient BCAP (50 Required)'}
         </button>
@@ -1588,9 +1590,70 @@ function openForgeStudioModal() {
   });
   updatePreview();
 
+  let countdownTimer = null;
+  const updateLimits = async () => {
+    try {
+      const addr = currentReceiveAddr();
+      const lim = await api.getForgeLimits(addr);
+      const quotaText = overlay.querySelector('#fg-quota-text');
+      const warnBox = overlay.querySelector('#fg-limit-warning');
+      const forgeBtn = overlay.querySelector('#btn-forge');
+      if (!quotaText || !forgeBtn) return;
+
+      quotaText.textContent = `${lim.hour_count}/${lim.hour_max} this hr · ${lim.day_count}/${lim.day_max} today`;
+      if (!lim.can_forge) {
+        forgeBtn.disabled = true;
+        let cooldownSec = lim.cooldown_seconds || 0;
+        if (lim.hour_count >= lim.hour_max) {
+          forgeBtn.textContent = `Hourly Limit (3/3) · Wait ${lim.cooldown_human}`;
+          warnBox.style.display = 'block';
+          warnBox.textContent = `⏳ Hourly Limit Reached (3/3): Limit is 3 per hour, 10 per day. Next slot opens in ${lim.cooldown_human}.`;
+        } else {
+          forgeBtn.textContent = `Daily Limit (10/10) · Wait ${lim.cooldown_human}`;
+          warnBox.style.display = 'block';
+          warnBox.textContent = `🛑 Daily Limit Reached (10/10): Limit is 10 per day. Resets in ${lim.cooldown_human}.`;
+        }
+        if (countdownTimer) clearInterval(countdownTimer);
+        countdownTimer = setInterval(() => {
+          cooldownSec--;
+          if (cooldownSec <= 0) {
+            clearInterval(countdownTimer);
+            updateLimits();
+          } else {
+            const m = Math.floor(cooldownSec / 60);
+            const s = cooldownSec % 60;
+            const timeStr = `${m}m ${s < 10 ? '0' : ''}${s}s`;
+            if (lim.hour_count >= lim.hour_max) {
+              forgeBtn.textContent = `Hourly Limit (3/3) · Wait ${timeStr}`;
+              warnBox.textContent = `⏳ Hourly Limit Reached (3/3): Next slot opens in ${timeStr}.`;
+            } else {
+              const h = Math.floor(cooldownSec / 3600);
+              const remM = Math.floor((cooldownSec % 3600) / 60);
+              warnBox.textContent = `🛑 Daily Limit Reached (10/10): Resets in ${h}h ${remM}m.`;
+            }
+          }
+        }, 1000);
+      } else {
+        warnBox.style.display = 'none';
+        if (canAfford) {
+          forgeBtn.disabled = false;
+          forgeBtn.textContent = 'Forge into Chain (Burn 50 BCAP)';
+        }
+      }
+    } catch (err) {
+      console.warn('Forge limit check warning:', err);
+    }
+  };
+  updateLimits();
+
+  const cleanup = () => {
+    if (countdownTimer) clearInterval(countdownTimer);
+    overlay.remove();
+  };
+
   overlay.addEventListener('click', async (e) => {
     if (e.target.dataset.act === 'close' || e.target === overlay) {
-      overlay.remove();
+      cleanup();
       return;
     }
     if (e.target.id === 'btn-forge') {
@@ -1643,7 +1706,7 @@ function openForgeStudioModal() {
           transfers: []
         };
         state.cards = [optimisticCard, ...state.cards];
-        overlay.remove();
+        cleanup();
         refresh();
       } catch (err) {
         toast(err.message, 'err');

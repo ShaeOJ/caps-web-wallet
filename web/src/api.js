@@ -31,6 +31,10 @@ export async function getCards(addresses) {
   return get('/api/cards?addresses=' + encodeURIComponent(list.join(',')));
 }
 
+export async function getForgeLimits(address) {
+  return get('/api/cards/limits?address=' + encodeURIComponent(address));
+}
+
 export async function getSidechainInfo() {
   return get('/api/sidechain/info');
 }

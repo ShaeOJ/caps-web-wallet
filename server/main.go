@@ -515,7 +515,50 @@ func (s *server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid raw tx hex")
 		return
 	}
-	// Pass maxfeerate=0 to accept raw burn transactions (e.g. 500 BCAP for custom forge)
+	var creatorAddr string
+	if strings.Contains(hex, "4341504304") {
+		decRaw, err := s.cfg.rpc(r.Context(), "decoderawtransaction", hex)
+		if err == nil {
+			var decTx struct {
+				Vout []struct {
+					Value        float64 `json:"value"`
+					ScriptPubKey struct {
+						Hex       string   `json:"hex"`
+						Address   string   `json:"address"`
+						Addresses []string `json:"addresses"`
+					} `json:"scriptPubKey"`
+				} `json:"vout"`
+			}
+			if json.Unmarshal(decRaw, &decTx) == nil {
+				for _, out := range decTx.Vout {
+					if math.Abs(out.Value-0.00001000) < 1e-7 {
+						target := out.ScriptPubKey.Address
+						if target == "" && len(out.ScriptPubKey.Addresses) > 0 {
+							target = out.ScriptPubKey.Addresses[0]
+						}
+						if target != "" {
+							creatorAddr = target
+							break
+						}
+					}
+				}
+			}
+		}
+
+		if creatorAddr != "" {
+			_, dayCount, canForge, cooldownSec := checkForgeLimit(creatorAddr)
+			if !canForge {
+				reason := fmt.Sprintf("Hourly limit reached (3/3). Next slot in %s.", formatCooldown(cooldownSec))
+				if dayCount >= maxForgesPerDay {
+					reason = fmt.Sprintf("Daily limit reached (10/10). Resets in %s.", formatCooldown(cooldownSec))
+				}
+				writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("Forge limit reached for %s (%s)", creatorAddr, reason))
+				return
+			}
+		}
+	}
+
+	// Pass maxfeerate=0 to accept raw burn transactions (e.g. 50 BCAP for custom forge)
 	raw, err := s.cfg.rpc(r.Context(), "sendrawtransaction", hex, 0)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
@@ -523,6 +566,10 @@ func (s *server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	var txid string
 	_ = json.Unmarshal(raw, &txid)
+
+	if creatorAddr != "" && txid != "" {
+		recordForge(creatorAddr, txid, time.Now().Unix())
+	}
 	// a successful broadcast changes UTXO state; drop cache
 	scanCacheMu.Lock()
 	scanCache = map[string]cachedScan{}
@@ -773,11 +820,126 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const (
+	maxForgesPerHour = 3
+	maxForgesPerDay  = 10
+)
+
 var (
 	forgedCardsMu        sync.RWMutex
 	forgedCardsCache     = make(map[string]map[string]any)
 	lastForgedScanHeight int64 = 5290
+
+	forgeHistoryMu  sync.RWMutex
+	forgeTimestamps = make(map[string][]int64) // address -> slice of unix timestamps
 )
+
+func recordForge(address string, txid string, timestamp int64) {
+	if address == "" {
+		return
+	}
+	forgeHistoryMu.Lock()
+	defer forgeHistoryMu.Unlock()
+
+	tsList := forgeTimestamps[address]
+	for _, ts := range tsList {
+		if ts == timestamp {
+			return
+		}
+	}
+	forgeTimestamps[address] = append(tsList, timestamp)
+}
+
+func checkForgeLimit(address string) (hourCount int, dayCount int, canForge bool, cooldownSec int64) {
+	forgeHistoryMu.RLock()
+	defer forgeHistoryMu.RUnlock()
+
+	now := time.Now().Unix()
+	timestamps := forgeTimestamps[address]
+	var recentHour []int64
+	var recentDay []int64
+
+	for _, ts := range timestamps {
+		if now-ts < 3600 {
+			recentHour = append(recentHour, ts)
+		}
+		if now-ts < 86400 {
+			recentDay = append(recentDay, ts)
+		}
+	}
+
+	hourCount = len(recentHour)
+	dayCount = len(recentDay)
+	canForge = hourCount < maxForgesPerHour && dayCount < maxForgesPerDay
+
+	if hourCount >= maxForgesPerHour && len(recentHour) > 0 {
+		sort.Slice(recentHour, func(i, j int) bool { return recentHour[i] < recentHour[j] })
+		cd := (recentHour[0] + 3600) - now
+		if cd > cooldownSec {
+			cooldownSec = cd
+		}
+	}
+	if dayCount >= maxForgesPerDay && len(recentDay) > 0 {
+		sort.Slice(recentDay, func(i, j int) bool { return recentDay[i] < recentDay[j] })
+		cd := (recentDay[0] + 86400) - now
+		if cd > cooldownSec {
+			cooldownSec = cd
+		}
+	}
+	if cooldownSec < 0 {
+		cooldownSec = 0
+	}
+	return
+}
+
+func formatCooldown(sec int64) string {
+	if sec <= 0 {
+		return "0s"
+	}
+	if sec < 60 {
+		return fmt.Sprintf("%ds", sec)
+	}
+	if sec < 3600 {
+		return fmt.Sprintf("%dm %ds", sec/60, sec%60)
+	}
+	return fmt.Sprintf("%dh %dm", sec/3600, (sec%3600)/60)
+}
+
+func (s *server) handleCardsLimits(w http.ResponseWriter, r *http.Request) {
+	addr := r.URL.Query().Get("address")
+	if addr == "" {
+		addrs, _ := parseAddrs(r)
+		if len(addrs) > 0 {
+			addr = addrs[0]
+		}
+	}
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, "missing address query parameter")
+		return
+	}
+
+	hourCount, dayCount, canForge, cooldownSec := checkForgeLimit(addr)
+	hRem := maxForgesPerHour - hourCount
+	if hRem < 0 {
+		hRem = 0
+	}
+	dRem := maxForgesPerDay - dayCount
+	if dRem < 0 {
+		dRem = 0
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"address":          addr,
+		"hour_count":       hourCount,
+		"hour_max":         maxForgesPerHour,
+		"hour_remaining":   hRem,
+		"day_count":        dayCount,
+		"day_max":          maxForgesPerDay,
+		"day_remaining":    dRem,
+		"can_forge":        canForge,
+		"cooldown_seconds": cooldownSec,
+		"cooldown_human":   formatCooldown(cooldownSec),
+	})
+}
 
 func (s *server) syncMainnetForgedCards(ctx context.Context) {
 	forgedCardsMu.Lock()
@@ -808,7 +970,8 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 				break
 			}
 			var block struct {
-				Tx []struct {
+				Time int64 `json:"time"`
+				Tx   []struct {
 					TxID string `json:"txid"`
 					Vin  []struct {
 						TxID string `json:"txid"`
@@ -870,6 +1033,11 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 								"transfers": []any{},
 							}
 							forgedCardsCache[utxo] = card
+							bTime := block.Time
+							if bTime <= 0 {
+								bTime = time.Now().Unix()
+							}
+							recordForge(owner, tx.TxID, bTime)
 						}
 					}
 				}
@@ -1003,6 +1171,7 @@ func (s *server) syncMainnetForgedCards(ctx context.Context) {
 								"transfers": []any{},
 							}
 							forgedCardsCache[cardUtxo] = card
+							recordForge(owner, tx.TxID, time.Now().Unix())
 						}
 					}
 				}
@@ -1594,6 +1763,7 @@ func main() {
 	mux.HandleFunc("POST /api/broadcast", s.handleBroadcast)
 	mux.HandleFunc("GET /api/network", s.handleNetwork)
 	mux.HandleFunc("GET /api/cards", s.handleCards)
+	mux.HandleFunc("GET /api/cards/limits", s.handleCardsLimits)
 	mux.HandleFunc("POST /api/cards/recipe", s.handleSaveRecipe)
 	mux.HandleFunc("GET /api/cards/recipe", s.handleGetRecipe)
 	mux.HandleFunc("GET /api/market/orders", s.handleGetMarketOrders)
