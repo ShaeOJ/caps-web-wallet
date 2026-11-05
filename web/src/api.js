@@ -45,3 +45,18 @@ export async function broadcast(hex) {
   if (!r.ok) throw new Error(j.error || `broadcast failed (${r.status})`);
   return j; // { txid }
 }
+
+export async function saveRecipe(recipeHash, recipe) {
+  const r = await fetch('/api/cards/recipe', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ recipe_hash: recipeHash, recipe }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `save recipe failed (${r.status})`);
+  return j;
+}
+
+export async function getRecipe(recipeHash) {
+  return get('/api/cards/recipe?hash=' + encodeURIComponent(recipeHash));
+}

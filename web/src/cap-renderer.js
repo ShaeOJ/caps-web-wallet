@@ -108,8 +108,16 @@ export function renderCapToCanvas(canvas, recipe) {
   ctx.fill();
   ctx.restore();
 
-  // 5. Draw Emblem
-  drawEmblem(ctx, center, center, innerRadius * 0.72, traits.emblem || 'atomic', tier.color);
+  // 5. Draw Custom Artwork or Preset Emblem
+  if (traits.custom_image) {
+    drawCustomImage(ctx, center, center, innerRadius * 0.90, traits.custom_image, () => {
+      renderCapToCanvas(canvas, recipe);
+    });
+  } else if (traits.custom_strokes && traits.custom_strokes.length > 0) {
+    drawCustomStrokes(ctx, center, center, innerRadius * 0.72, traits.custom_strokes);
+  } else {
+    drawEmblem(ctx, center, center, innerRadius * 0.72, traits.emblem || 'atomic', tier.color);
+  }
 
   // 6. Weathering / Wear
   applyWear(ctx, center, center, innerRadius, traits.wear || 'mint');
@@ -261,4 +269,108 @@ export function renderCapToDataURL(recipe, size = 180) {
   canvas.height = size;
   renderCapToCanvas(canvas, recipe);
   return canvas.toDataURL('image/png');
+}
+
+const imageElementCache = new Map();
+
+function drawCustomImage(ctx, cx, cy, rad, src, onLoaded) {
+  let img = imageElementCache.get(src);
+  if (!img) {
+    img = new Image();
+    img.src = src;
+    img.onload = () => {
+      imageElementCache.set(src, img);
+      if (onLoaded) onLoaded();
+    };
+    return;
+  }
+
+  if (!img.complete || img.naturalWidth === 0) return;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+  ctx.clip();
+
+  const aspect = img.width / img.height;
+  let drawW = rad * 2;
+  let drawH = rad * 2;
+  if (aspect > 1) {
+    drawW = drawH * aspect;
+  } else {
+    drawH = drawW / aspect;
+  }
+  ctx.drawImage(img, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+  ctx.restore();
+}
+
+function drawCustomStrokes(ctx, cx, cy, rad, strokes) {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (const s of strokes) {
+    if (!s.points || s.points.length === 0) continue;
+    ctx.strokeStyle = s.color || '#ffd700';
+    ctx.lineWidth = Math.max(1.5, (s.width || 0.05) * rad);
+    ctx.beginPath();
+    const p0 = s.points[0];
+    ctx.moveTo(cx + p0.x * rad, cy + p0.y * rad);
+    for (let i = 1; i < s.points.length; i++) {
+      const pt = s.points[i];
+      ctx.lineTo(cx + pt.x * rad, cy + pt.y * rad);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+export function processImageToCircle(src, filter, callback) {
+  const img = new Image();
+  img.src = src;
+  img.onload = () => {
+    const size = 256;
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const ctx = off.getContext('2d');
+    if (!ctx) return;
+
+    // Center crop to square
+    const aspect = img.width / img.height;
+    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+    if (aspect > 1) {
+      sw = img.height;
+      sx = (img.width - sw) / 2;
+    } else {
+      sh = img.width;
+      sy = (img.height - sh) / 2;
+    }
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size, size);
+
+    if (filter !== 'none') {
+      const imgData = ctx.getImageData(0, 0, size, size);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (filter === 'sepia') {
+          d[i] = Math.min(255, gray * 1.05 + 30);
+          d[i + 1] = Math.min(255, gray * 0.85 + 15);
+          d[i + 2] = Math.max(0, gray * 0.60);
+        } else if (filter === 'phosphor') {
+          d[i] = Math.max(0, gray * 0.15);
+          d[i + 1] = Math.min(255, gray * 1.25 + 20);
+          d[i + 2] = Math.max(0, gray * 0.20);
+        } else if (filter === 'mono') {
+          d[i] = gray;
+          d[i + 1] = gray;
+          d[i + 2] = gray;
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    callback(off.toDataURL('image/png'));
+  };
 }

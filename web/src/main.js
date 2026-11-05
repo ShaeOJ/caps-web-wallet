@@ -8,7 +8,7 @@ import {
   newMnemonic, isValidMnemonic, openWallet, encryptSeed, decryptSeed,
   buildTx, capsToSats, satsToCaps,
 } from './wallet.js';
-import { renderCapToCanvas, RARITY_TIERS } from './cap-renderer.js';
+import { renderCapToCanvas, RARITY_TIERS, processImageToCircle } from './cap-renderer.js';
 import { buildTransferCardTx, buildForgeCapTx, FORGE_FEE_SATS } from './capc.js';
 
 const AUTO_LOCK_MS = 5 * 60 * 1000;
@@ -759,6 +759,24 @@ function openForgeStudioModal() {
   const currentBal = state.balanceSats;
   const canAfford = currentBal >= FORGE_FEE_SATS;
 
+  const DRAW_COLORS = [
+    { name: 'Gold', hex: '#ffd700' },
+    { name: 'Cyan', hex: '#00e5ff' },
+    { name: 'Rad Green', hex: '#39ff14' },
+    { name: 'Raider Red', hex: '#ff3344' },
+    { name: 'Rust Amber', hex: '#cd7f32' },
+    { name: 'White', hex: '#ffffff' },
+    { name: 'Carbon', hex: '#181a20' },
+  ];
+
+  let artMode = 'preset'; // 'preset' | 'draw' | 'image'
+  let customStrokes = [];
+  let activeColor = '#ffd700';
+  let activeWidth = 0.06;
+  let rawImageSrc = null;
+  let customImage = null;
+  let imageFilter = 'none';
+
   const overlay = el(`<div class="cap-modal-overlay">
     <div class="cap-modal">
       <button class="modal-close" data-act="close">&times;</button>
@@ -769,7 +787,7 @@ function openForgeStudioModal() {
       </div>
 
       <div class="forge-preview">
-        <canvas width="280" height="280"></canvas>
+        <canvas id="fg-preview-canvas" width="280" height="280"></canvas>
       </div>
 
       <div class="field">
@@ -787,17 +805,6 @@ function openForgeStudioModal() {
           <option value="gilded_gold">Gilded Vault Gold</option>
           <option value="obsidian_carbon">Obsidian Carbon</option>
           <option value="weathered_tin">Weathered Tin</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label>Emblem</label>
-        <select id="fg-emblem">
-          <option value="atomic">Atomic Nucleus & Rings</option>
-          <option value="vault_door">Vault Door 76</option>
-          <option value="sunset_star">Sunset Starburst</option>
-          <option value="skull">Raider Skull & Crossbones</option>
-          <option value="bcap_stamp">BCAP Wasteland Stamp</option>
         </select>
       </div>
 
@@ -822,6 +829,67 @@ function openForgeStudioModal() {
         </select>
       </div>
 
+      <!-- Artwork Source Selection Tabs -->
+      <div class="field">
+        <label>Emblem Artwork Source</label>
+        <div class="art-tabs">
+          <button type="button" class="art-tab-btn active" data-mode="preset">Presets</button>
+          <button type="button" class="art-tab-btn" data-mode="draw">Hand Draw</button>
+          <button type="button" class="art-tab-btn" data-mode="image">Image / Photo</button>
+        </div>
+      </div>
+
+      <!-- Preset Icons Panel -->
+      <div id="art-panel-preset" class="field">
+        <label>Preset Emblem</label>
+        <select id="fg-emblem">
+          <option value="atomic">Atomic Nucleus & Rings</option>
+          <option value="vault_door">Vault Door 76</option>
+          <option value="sunset_star">Sunset Starburst</option>
+          <option value="skull">Raider Skull & Crossbones</option>
+          <option value="bcap_stamp">BCAP Wasteland Stamp</option>
+        </select>
+      </div>
+
+      <!-- Hand-Drawing Pad Panel -->
+      <div id="art-panel-draw" class="draw-pad-box" style="display:none">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <span style="font-size:11px; color:var(--muted)">Draw inside the rim:</span>
+          <div style="display:flex; gap:6px;">
+            <button type="button" id="fg-draw-undo" class="btn small" style="padding:2px 8px; font-size:10px;">↩ Undo</button>
+            <button type="button" id="fg-draw-clear" class="btn small" style="padding:2px 8px; font-size:10px; color:#ff6b6b">✕ Clear</button>
+          </div>
+        </div>
+        <canvas id="fg-draw-pad" class="draw-pad-canvas" width="220" height="220"></canvas>
+        <div class="draw-controls">
+          <div class="palette-row" id="fg-draw-palette">
+            ${DRAW_COLORS.map(c => `<button type="button" class="color-swatch ${c.hex === '#ffd700' ? 'active' : ''}" data-color="${c.hex}" style="background-color:${c.hex}" title="${c.name}"></button>`).join('')}
+          </div>
+          <div class="brush-sizes" id="fg-brush-sizes">
+            <button type="button" class="brush-btn" data-w="0.03">S</button>
+            <button type="button" class="brush-btn active" data-w="0.06">M</button>
+            <button type="button" class="brush-btn" data-w="0.10">L</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Image / Photo Upload Panel -->
+      <div id="art-panel-image" class="draw-pad-box" style="display:none">
+        <input type="file" id="fg-file-input" accept="image/*" style="display:none">
+        <button type="button" id="fg-btn-upload" class="btn secondary" style="width:100%; font-size:12px; margin-bottom:8px;">
+          📷 Upload Image / Photo
+        </button>
+        <div id="fg-filter-section" style="display:none">
+          <div style="font-size:10px; color:var(--muted); font-weight:700; text-transform:uppercase; text-align:left; margin-bottom:4px;">Wasteland Filter:</div>
+          <div class="filter-grid" id="fg-filter-grid">
+            <button type="button" class="filter-btn active" data-filter="none">Original</button>
+            <button type="button" class="filter-btn" data-filter="sepia">Rust Patina</button>
+            <button type="button" class="filter-btn" data-filter="phosphor">Rad Green</button>
+            <button type="button" class="filter-btn" data-filter="mono">Noir B&W</button>
+          </div>
+        </div>
+      </div>
+
       <div class="review" style="margin-top:16px">
         <div class="line"><span>Wallet Balance:</span> <b>${satsToCaps(currentBal)} BCAP</b></div>
         <div class="line"><span>Required Burn:</span> <b style="color:var(--err)">500.00000000 BCAP</b></div>
@@ -832,7 +900,9 @@ function openForgeStudioModal() {
     </div>
   </div>`);
 
-  const cvs = overlay.querySelector('canvas');
+  const previewCvs = overlay.querySelector('#fg-preview-canvas');
+  const drawPadCvs = overlay.querySelector('#fg-draw-pad');
+  const fileInput = overlay.querySelector('#fg-file-input');
 
   const updatePreview = () => {
     const title = $('#fg-title', overlay).value.trim() || 'Custom Cap';
@@ -850,14 +920,209 @@ function openForgeStudioModal() {
       traits: {
         base_metal: metal,
         flutes: 'classic_21',
-        emblem: emblem,
+        emblem: artMode === 'preset' ? emblem : 'custom',
         wear: wear,
-        glow: glow
+        glow: glow,
+        custom_type: artMode,
+        ...(artMode === 'draw' ? { custom_strokes: customStrokes } : {}),
+        ...(artMode === 'image' && customImage ? { custom_image: customImage } : {}),
       }
     };
-    renderCapToCanvas(cvs, recipe);
+    renderCapToCanvas(previewCvs, recipe);
     return recipe;
   };
+
+  // Render Drawing Pad
+  let isDrawing = false;
+  let currentStrokePoints = [];
+
+  const renderDrawPad = () => {
+    if (!drawPadCvs) return;
+    const ctx = drawPadCvs.getContext('2d');
+    if (!ctx) return;
+
+    const size = drawPadCvs.width;
+    const center = size / 2;
+    const radius = size * 0.44;
+
+    ctx.clearRect(0, 0, size, size);
+
+    // Inner guide disc
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(center, center, radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#141a0e';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(245, 166, 35, 0.4)';
+    ctx.stroke();
+    ctx.restore();
+
+    // Render confirmed strokes
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (const stroke of customStrokes) {
+      if (!stroke.points || stroke.points.length === 0) continue;
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = Math.max(1.5, stroke.width * radius);
+      ctx.beginPath();
+      const p0 = stroke.points[0];
+      ctx.moveTo(center + p0.x * radius, center + p0.y * radius);
+      for (let i = 1; i < stroke.points.length; i++) {
+        const pt = stroke.points[i];
+        ctx.lineTo(center + pt.x * radius, center + pt.y * radius);
+      }
+      ctx.stroke();
+    }
+
+    // Render active stroke
+    if (currentStrokePoints.length > 0) {
+      ctx.strokeStyle = activeColor;
+      ctx.lineWidth = Math.max(1.5, activeWidth * radius);
+      ctx.beginPath();
+      const p0 = currentStrokePoints[0];
+      ctx.moveTo(center + p0.x * radius, center + p0.y * radius);
+      for (let i = 1; i < currentStrokePoints.length; i++) {
+        const pt = currentStrokePoints[i];
+        ctx.lineTo(center + pt.x * radius, center + pt.y * radius);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+
+  // Pointer event listeners for touch & mouse drawing
+  drawPadCvs.addEventListener('pointerdown', (e) => {
+    drawPadCvs.setPointerCapture(e.pointerId);
+    isDrawing = true;
+    const rect = drawPadCvs.getBoundingClientRect();
+    const size = rect.width;
+    const center = size / 2;
+    const radius = size * 0.44;
+    const px = (e.clientX - rect.left - center) / radius;
+    const py = (e.clientY - rect.top - center) / radius;
+    currentStrokePoints = [{ x: px, y: py }];
+    renderDrawPad();
+  });
+
+  drawPadCvs.addEventListener('pointermove', (e) => {
+    if (!isDrawing) return;
+    const rect = drawPadCvs.getBoundingClientRect();
+    const size = rect.width;
+    const center = size / 2;
+    const radius = size * 0.44;
+    const px = (e.clientX - rect.left - center) / radius;
+    const py = (e.clientY - rect.top - center) / radius;
+    currentStrokePoints.push({ x: px, y: py });
+    renderDrawPad();
+  });
+
+  const stopDrawing = () => {
+    if (!isDrawing) return;
+    isDrawing = false;
+    if (currentStrokePoints.length > 0) {
+      customStrokes.push({
+        color: activeColor,
+        width: activeWidth,
+        points: [...currentStrokePoints]
+      });
+    }
+    currentStrokePoints = [];
+    renderDrawPad();
+    updatePreview();
+  };
+
+  drawPadCvs.addEventListener('pointerup', stopDrawing);
+  drawPadCvs.addEventListener('pointercancel', stopDrawing);
+
+  // Undo & Clear handlers
+  overlay.querySelector('#fg-draw-undo').addEventListener('click', () => {
+    if (customStrokes.length > 0) {
+      customStrokes.pop();
+      renderDrawPad();
+      updatePreview();
+    }
+  });
+
+  overlay.querySelector('#fg-draw-clear').addEventListener('click', () => {
+    customStrokes = [];
+    renderDrawPad();
+    updatePreview();
+  });
+
+  // Color Swatch Selection
+  overlay.querySelector('#fg-draw-palette').addEventListener('click', (e) => {
+    const btn = e.target.closest('.color-swatch');
+    if (!btn) return;
+    activeColor = btn.dataset.color;
+    overlay.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Brush Size Selection
+  overlay.querySelector('#fg-brush-sizes').addEventListener('click', (e) => {
+    const btn = e.target.closest('.brush-btn');
+    if (!btn) return;
+    activeWidth = parseFloat(btn.dataset.w);
+    overlay.querySelectorAll('.brush-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Tab switching (Presets vs Hand Draw vs Image/Photo)
+  overlay.querySelector('.art-tabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('.art-tab-btn');
+    if (!btn) return;
+    artMode = btn.dataset.mode;
+    overlay.querySelectorAll('.art-tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    overlay.querySelector('#art-panel-preset').style.display = artMode === 'preset' ? 'block' : 'none';
+    overlay.querySelector('#art-panel-draw').style.display = artMode === 'draw' ? 'block' : 'none';
+    overlay.querySelector('#art-panel-image').style.display = artMode === 'image' ? 'block' : 'none';
+
+    if (artMode === 'draw') {
+      renderDrawPad();
+    }
+    updatePreview();
+  });
+
+  // Image Upload & Filters
+  overlay.querySelector('#fg-btn-upload').addEventListener('click', () => {
+    fileInput.click();
+  });
+
+  const applyFilter = (filter) => {
+    imageFilter = filter;
+    if (rawImageSrc) {
+      processImageToCircle(rawImageSrc, filter, (dataUrl) => {
+        customImage = dataUrl;
+        updatePreview();
+      });
+    }
+  };
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      rawImageSrc = ev.target.result;
+      overlay.querySelector('#fg-filter-section').style.display = 'block';
+      applyFilter(imageFilter);
+    };
+    reader.readAsDataURL(file);
+  });
+
+  overlay.querySelector('#fg-filter-grid').addEventListener('click', (e) => {
+    const btn = e.target.closest('.filter-btn');
+    if (!btn) return;
+    overlay.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyFilter(btn.dataset.filter);
+  });
 
   overlay.querySelectorAll('input, select').forEach((inp) => {
     inp.addEventListener('input', updatePreview);
@@ -872,6 +1137,13 @@ function openForgeStudioModal() {
     }
     if (e.target.id === 'btn-forge') {
       if (!canAfford) return toast('Insufficient BCAP balance (500 required)', 'err');
+      if (artMode === 'draw' && customStrokes.length === 0) {
+        return toast('Please draw an emblem on the pad before forging', 'err');
+      }
+      if (artMode === 'image' && !customImage) {
+        return toast('Please upload an image before forging', 'err');
+      }
+
       const recipe = updatePreview();
       try {
         toast('Building 500 BCAP burn transaction…');
@@ -886,6 +1158,14 @@ function openForgeStudioModal() {
           recipe,
           feeRateSatPerVB: 10
         });
+
+        if (txData.recipeHash) {
+          try {
+            await api.saveRecipe(txData.recipeHash, recipe);
+          } catch (saveErr) {
+            console.warn('Recipe save warning:', saveErr);
+          }
+        }
 
         toast('Broadcasting custom forge to chain…');
         const res = await api.broadcast(txData.hex);
