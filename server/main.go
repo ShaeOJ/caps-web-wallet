@@ -30,6 +30,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -48,6 +49,7 @@ type config struct {
 	webDir                   string
 	listenAddr               string
 	network                  string
+	recipesDir               string
 }
 
 func envOr(k, def string) string {
@@ -58,6 +60,16 @@ func envOr(k, def string) string {
 }
 
 func loadConfig() config {
+	rDir := envOr("RECIPES_DIR", "")
+	if rDir == "" {
+		if _, err := os.Stat("/root/caps-wallet"); err == nil {
+			rDir = "/root/caps-wallet/recipes"
+		} else {
+			rDir = "./recipes"
+		}
+	}
+	_ = os.MkdirAll(rDir, 0755)
+
 	return config{
 		rpcURL:           envOr("CAPS_RPC_URL", "http://127.0.0.1:13667"),
 		rpcUser:          envOr("CAPS_RPC_USER", "rt"),
@@ -72,6 +84,7 @@ func loadConfig() config {
 		webDir:            envOr("WEB_DIR", ""),
 		listenAddr:        envOr("LISTEN_ADDR", "127.0.0.1:8470"),
 		network:           envOr("NETWORK", "regtest"),
+		recipesDir:        rDir,
 	}
 }
 
@@ -644,9 +657,9 @@ func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var data struct {
-		Cards    []any   `json:"cards"`
-		Total    int     `json:"total"`
-		ForgeFee float64 `json:"forge_fee"`
+		Cards    []map[string]any `json:"cards"`
+		Total    int              `json:"total"`
+		ForgeFee float64          `json:"forge_fee"`
 	}
 	if err := json.Unmarshal(res, &data); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -658,12 +671,86 @@ func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enrich cards with custom recipe artwork if available
+	for _, card := range data.Cards {
+		rHash, ok := card["recipe_hash"].(string)
+		if !ok || len(rHash) != 64 {
+			continue
+		}
+		path := filepath.Join(s.cfg.recipesDir, strings.ToLower(rHash)+".json")
+		if b, err := os.ReadFile(path); err == nil {
+			var rec struct {
+				Traits map[string]any `json:"traits"`
+			}
+			if err := json.Unmarshal(b, &rec); err == nil && rec.Traits != nil {
+				cTraits, _ := card["traits"].(map[string]any)
+				if cTraits == nil {
+					cTraits = map[string]any{}
+				}
+				for k, v := range rec.Traits {
+					cTraits[k] = v
+				}
+				card["traits"] = cTraits
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cards":     data.Cards,
 		"total":     data.Total,
 		"forge_fee": data.ForgeFee,
 		"online":    true,
 	})
+}
+
+func (s *server) handleSaveRecipe(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RecipeHash string         `json:"recipe_hash"`
+		Recipe     map[string]any `json:"recipe"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 5<<20)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	hash := strings.ToLower(strings.TrimSpace(body.RecipeHash))
+	if len(hash) != 64 || !isHex(hash) {
+		writeErr(w, http.StatusBadRequest, "invalid recipe_hash (must be 64-char hex)")
+		return
+	}
+	if body.Recipe == nil {
+		writeErr(w, http.StatusBadRequest, "missing recipe payload")
+		return
+	}
+
+	_ = os.MkdirAll(s.cfg.recipesDir, 0755)
+	filePath := filepath.Join(s.cfg.recipesDir, hash+".json")
+	data, err := json.Marshal(body.Recipe)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "failed to serialize recipe")
+		return
+	}
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to persist recipe")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recipe_hash": hash})
+}
+
+func (s *server) handleGetRecipe(w http.ResponseWriter, r *http.Request) {
+	hash := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hash")))
+	if len(hash) != 64 || !isHex(hash) {
+		writeErr(w, http.StatusBadRequest, "invalid recipe_hash")
+		return
+	}
+	filePath := filepath.Join(s.cfg.recipesDir, hash+".json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "recipe not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *server) handleSidechainInfo(w http.ResponseWriter, r *http.Request) {
@@ -726,6 +813,8 @@ func main() {
 	mux.HandleFunc("POST /api/broadcast", s.handleBroadcast)
 	mux.HandleFunc("GET /api/network", s.handleNetwork)
 	mux.HandleFunc("GET /api/cards", s.handleCards)
+	mux.HandleFunc("POST /api/cards/recipe", s.handleSaveRecipe)
+	mux.HandleFunc("GET /api/cards/recipe", s.handleGetRecipe)
 	mux.HandleFunc("GET /api/sidechain/info", s.handleSidechainInfo)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := cfg.rpc(r.Context(), "getblockcount"); err != nil {
