@@ -27,6 +27,9 @@ export async function getHistory(addresses) {
 }
 
 export async function getCards(addresses) {
+  if (!addresses || (Array.isArray(addresses) && addresses.length === 0)) {
+    return get('/api/cards');
+  }
   const list = Array.isArray(addresses) ? addresses : [addresses];
   return get('/api/cards?addresses=' + encodeURIComponent(list.join(',')));
 }

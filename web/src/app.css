@@ -351,6 +351,134 @@ ul.hist li.h-row:last-child { border-bottom: 0; }
 .t-badge.tier-4 { color: #ffd700; background: rgba(255,215,0,0.12); text-shadow: 0 0 8px rgba(255,215,0,0.6); }
 .t-badge.tier-5 { color: #e040fb; background: rgba(224,64,251,0.15); text-shadow: 0 0 10px rgba(224,64,251,0.8); }
 
+/* Scope Tabs (My Vault vs All Drops) */
+.caps-scope-bar {
+  display: flex; gap: 8px; align-items: center; margin: 12px 0 14px; flex-wrap: wrap;
+}
+.scope-btn {
+  padding: 8px 16px; border-radius: 9999px; font-weight: 700; font-size: 13px;
+  background: var(--card-bg, #140e08); color: var(--muted); border: 1px solid var(--line);
+  cursor: pointer; transition: all 0.18s ease; display: inline-flex; align-items: center; gap: 6px;
+}
+.scope-btn:hover { color: var(--fg); border-color: var(--amber); }
+.scope-btn.active {
+  background: var(--amber); color: #0a0603; border-color: var(--amber);
+  box-shadow: 0 0 14px rgba(255,179,0,0.35);
+}
+
+/* Spotlight Horizontal Touch-Swipe Carousel */
+.spotlight-section {
+  background: rgba(20, 14, 8, 0.7); border: 1px solid var(--line); border-radius: 14px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.spotlight-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+  font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg);
+}
+.swipe-card-tray {
+  display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch; scroll-behavior: smooth; gap: 12px;
+  padding: 4px 2px 10px;
+}
+.swipe-card-tray::-webkit-scrollbar { height: 6px; }
+.swipe-card-tray::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.swipe-card-item {
+  scroll-snap-align: center; flex-shrink: 0;
+  width: 155px; background: #18110a; border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 10px 8px; text-align: center; cursor: pointer; transition: all 0.2s ease;
+  position: relative; overflow: hidden;
+}
+.swipe-card-item:hover {
+  transform: translateY(-2px); border-color: var(--amber);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+}
+.swipe-card-item.glow-3 { border-color: rgba(0,229,255,0.7); box-shadow: 0 0 12px rgba(0,229,255,0.25); }
+.swipe-card-item.glow-4 { border-color: rgba(255,215,0,0.8); box-shadow: 0 0 16px rgba(255,215,0,0.3); }
+.swipe-card-item.glow-5 { border-color: rgba(224,64,251,0.9); box-shadow: 0 0 20px rgba(224,64,251,0.4); }
+
+/* Search & Sort Controls */
+.caps-controls-bar {
+  display: flex; gap: 10px; align-items: center; justify-content: space-between;
+  margin: 10px 0 14px; flex-wrap: wrap;
+}
+.caps-search-wrap {
+  flex: 1; min-width: 180px; position: relative;
+}
+.caps-search-input {
+  width: 100%; box-sizing: border-box; padding: 9px 12px; border-radius: 10px;
+  background: #140e08; border: 1px solid var(--line); color: var(--fg); font-size: 13px;
+  font-family: inherit;
+}
+.caps-search-input:focus { outline: none; border-color: var(--amber); }
+.caps-sort-select {
+  padding: 8px 12px; border-radius: 10px; background: #140e08; border: 1px solid var(--line);
+  color: var(--fg); font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit;
+}
+.caps-view-toggle {
+  display: flex; background: #140e08; border: 1px solid var(--line); border-radius: 10px; padding: 2px;
+}
+.view-btn {
+  background: transparent; border: none; color: var(--muted); padding: 6px 10px;
+  border-radius: 8px; cursor: pointer; font-size: 14px; transition: all 0.15s ease;
+}
+.view-btn.active {
+  background: var(--amber); color: #0a0603; font-weight: bold;
+}
+
+/* Tier Chips with Dynamic Counts */
+.tier-chips-wrap {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px;
+}
+.tier-chip {
+  padding: 6px 12px; border-radius: 9999px; font-size: 11.5px; font-weight: 700;
+  border: 1px solid var(--line); background: #140e08; color: var(--muted);
+  white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  transition: all 0.15s ease;
+}
+.tier-chip:hover { color: var(--fg); }
+.tier-chip.active {
+  background: var(--amber); color: #0a0603; border-color: var(--amber);
+  box-shadow: 0 0 10px rgba(255,179,0,0.3);
+}
+.tier-count-pill {
+  padding: 1px 6px; border-radius: 9999px; font-size: 10px; background: rgba(0,0,0,0.35); font-weight: 800;
+}
+
+/* Showcase Single-Column Card View */
+.caps-showcase-list {
+  display: flex; flex-direction: column; gap: 12px; margin: 16px 0;
+}
+.cap-showcase-item {
+  background: #140e08; border: 1px solid var(--line); border-radius: 14px;
+  padding: 14px; display: flex; align-items: center; gap: 16px; cursor: pointer;
+  transition: all 0.18s ease; position: relative; overflow: hidden;
+}
+.cap-showcase-item:hover {
+  border-color: var(--amber); transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+}
+.cap-showcase-canvas {
+  width: 100px; height: 100px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+}
+.cap-showcase-canvas canvas { width: 100px; height: 100px; border-radius: 50%; }
+.cap-showcase-details { flex: 1; min-width: 0; }
+.cap-showcase-title { font-size: 15px; font-weight: 800; color: var(--fg); margin: 0 0 4px; }
+.cap-showcase-meta { font-size: 11.5px; color: var(--muted); font-family: monospace; margin-bottom: 6px; }
+
+/* Material Pagination Controls */
+.caps-pagination-bar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 10px; padding: 12px 14px; background: #140e08; border: 1px solid var(--line);
+  border-radius: 12px; margin-top: 16px; font-size: 12.5px; color: var(--muted);
+}
+.caps-page-controls { display: flex; align-items: center; gap: 8px; }
+.caps-page-btn {
+  padding: 6px 14px; border-radius: 8px; background: #1c140c; border: 1px solid var(--line);
+  color: var(--fg); font-weight: 700; cursor: pointer; transition: all 0.15s ease;
+}
+.caps-page-btn:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+.caps-page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
 .caps-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));

@@ -23,6 +23,7 @@ const state = {
   recvIndex: 0,
   idleTimer: null,
   cards: [],
+  allCards: [],
   // Sends we broadcast this session but have not yet seen confirmed. The explorer
   // (and thus History/balance) only sees a tx once it's mined (~1 BTLCAP block),
   // so we surface these optimistically until they show up confirmed.
@@ -1023,75 +1024,377 @@ function openBuyCardModal(order) {
 }
 
 function panelBottlecaps() {
+  let activeScope = 'my'; // 'my' | 'all'
+  let tierFilter = 'all'; // 'all' | 1..5
+  let searchQuery = '';
+  let sortBy = 'rarest'; // 'rarest' | 'newest' | 'serial'
+  let viewMode = 'grid'; // 'grid' | 'showcase'
+  let currentPage = 1;
+  const cardsPerPage = 8;
+  let showAllUnpaged = false;
+  let isLoading = false;
+
   const v = el(`<div class="panel">
     <div class="caps-header">
       <div>
         <h2 style="margin:0">Bottlecaps Collection</h2>
-        <div class="caps-summary">Owned: <b id="caps-count">${state.cards.length}</b> cards</div>
+        <div class="caps-summary">Owned: <b id="caps-count">${state.cards.length}</b> cards &bull; Sidechain Drops: <b id="all-caps-count">${state.allCards.length}</b></div>
       </div>
-      <button class="btn small primary" data-act="forge-open">🔨 Forge Cap</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn small" data-act="caps-refresh">🔄 Refresh</button>
+        <button class="btn small primary" data-act="forge-open">🔨 Forge Cap</button>
+      </div>
     </div>
 
-    <div class="tier-badges">
-      <span class="t-badge tier-1">Scrap (60%)</span>
-      <span class="t-badge tier-2">Brass (25%)</span>
-      <span class="t-badge tier-3">Rad Silver (10%)</span>
-      <span class="t-badge tier-4">Vault Gold (4%)</span>
-      <span class="t-badge tier-5">Mythic (1%)</span>
+    <!-- Scope Switcher: My Vault vs All Drops -->
+    <div class="caps-scope-bar">
+      <button class="scope-btn ${activeScope === 'my' ? 'active' : ''}" data-act="scope-my">
+        🛡️ My Vault (<span id="scope-my-count">${state.cards.length}</span>)
+      </button>
+      <button class="scope-btn ${activeScope === 'all' ? 'active' : ''}" data-act="scope-all">
+        🍾 All Wasteland Drops (<span id="scope-all-count">${state.allCards.length}</span>)
+      </button>
     </div>
 
+    <!-- Spotlight Top Rarity Carousel -->
+    <div id="spotlight-container"></div>
+
+    <!-- Search, Sort & View Controls -->
+    <div class="caps-controls-bar">
+      <div class="caps-search-wrap">
+        <input type="text" class="caps-search-input" id="caps-search" placeholder="Search by title, #serial, metal, or class…" value="${esc(searchQuery)}">
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <select class="caps-sort-select" id="caps-sort">
+          <option value="rarest" ${sortBy === 'rarest' ? 'selected' : ''}>Rarest First</option>
+          <option value="newest" ${sortBy === 'newest' ? 'selected' : ''}>Newest First</option>
+          <option value="serial" ${sortBy === 'serial' ? 'selected' : ''}>Serial #</option>
+        </select>
+        <div class="caps-view-toggle">
+          <button class="view-btn ${viewMode === 'grid' ? 'active' : ''}" data-act="view-grid" title="Grid View">⊞</button>
+          <button class="view-btn ${viewMode === 'showcase' ? 'active' : ''}" data-act="view-showcase" title="Showcase View">☰</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dynamic Rarity Tier Filter Chips -->
+    <div class="tier-chips-wrap" id="tier-chips-container"></div>
+
+    <!-- Cards List Container -->
     <div id="caps-list-container">
       <p class="muted">Loading cards…</p>
     </div>
+
+    <!-- Pagination Footer -->
+    <div id="caps-pagination-container"></div>
   </div>`);
 
   const listContainer = $('#caps-list-container', v);
+  const spotlightContainer = $('#spotlight-container', v);
+  const tierChipsContainer = $('#tier-chips-container', v);
+  const paginationContainer = $('#caps-pagination-container', v);
+  const searchInput = $('#caps-search', v);
+  const sortSelect = $('#caps-sort', v);
 
-  const renderCards = () => {
-    if (state.cards.length === 0) {
-      listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
-        <p style="margin:4px 0 8px; font-weight:600">No bottlecaps discovered yet!</p>
-        <p class="muted" style="margin:0 0 12px; font-size:12.5px;">Mine BTLCAP blocks on the pool to win card drops, or spend 50 BCAP to forge your own custom cap.</p>
-        <button class="btn primary small" data-act="forge-open">Forge Your First Cap (50 BCAP)</button>
-      </div>`;
+  const getScopeCards = () => (activeScope === 'my' ? state.cards : state.allCards) || [];
+
+  const renderTierChips = () => {
+    const scopeCards = getScopeCards();
+    const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    for (const c of scopeCards) {
+      const t = c.tier || 1;
+      counts[t] = (counts[t] || 0) + 1;
+    }
+
+    tierChipsContainer.innerHTML = '';
+    const allChip = el(`<button class="tier-chip ${tierFilter === 'all' ? 'active' : ''}" data-tier="all">
+      All <span class="tier-count-pill">${scopeCards.length}</span>
+    </button>`);
+    tierChipsContainer.appendChild(allChip);
+
+    [1, 2, 3, 4, 5].forEach((tid) => {
+      const tier = RARITY_TIERS[tid] || { name: `Tier ${tid}`, color: '#fff' };
+      const count = counts[tid] || 0;
+      const chip = el(`<button class="tier-chip ${tierFilter === tid ? 'active' : ''}" data-tier="${tid}" style="${tierFilter === tid ? `background:${tier.color}; color:#0a0603; border-color:${tier.color}` : ''}">
+        ${tier.name} <span class="tier-count-pill">${count}</span>
+      </button>`);
+      tierChipsContainer.appendChild(chip);
+    });
+  };
+
+  const renderSpotlight = () => {
+    const scopeCards = getScopeCards();
+    if (scopeCards.length === 0) {
+      spotlightContainer.innerHTML = '';
       return;
     }
 
-    const grid = el(`<div class="caps-grid"></div>`);
-    state.cards.forEach((card) => {
+    // Top 6 rarest drops
+    const topCards = [...scopeCards]
+      .sort((a, b) => (b.tier || 1) - (a.tier || 1) || (b.serial || 0) - (a.serial || 0))
+      .slice(0, 6);
+
+    const sSec = el(`<div class="spotlight-section">
+      <div class="spotlight-header">
+        <span>⭐ Spotlight Drops (Swipe ↔)</span>
+        <span class="muted" style="font-size:11px;">Top ${topCards.length} Rarest</span>
+      </div>
+      <div class="swipe-card-tray"></div>
+    </div>`);
+
+    const tray = $('.swipe-card-tray', sSec);
+    topCards.forEach((card) => {
       const tierId = card.tier || 1;
-      const tile = el(`<div class="cap-tile glow-${tierId}">
-        <div class="cap-canvas-wrap"><canvas width="180" height="180"></canvas></div>
-        <div class="t-badge tier-${tierId}" style="display:inline-block; font-size:10px; margin:2px 0;">${esc(card.traits?.class_name || RARITY_TIERS[tierId]?.name || 'Common')}</div>
-        <div class="cap-title">Card #${esc(card.card_id)}</div>
-        <div class="cap-sub">Serial #${esc(card.serial)}</div>
+      const tier = RARITY_TIERS[tierId] || RARITY_TIERS[1];
+      const item = el(`<div class="swipe-card-item glow-${tierId}">
+        <div class="t-badge tier-${tierId}" style="display:inline-block; font-size:9.5px; margin-bottom:4px;">${esc(tier.name)}</div>
+        <div class="cap-canvas-wrap" style="width:78px; height:78px;"><canvas width="160" height="160"></canvas></div>
+        <div class="cap-title" style="font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(card.title || `Card #${card.card_id}`)}</div>
+        <div class="cap-sub" style="font-size:10.5px; font-weight:700; color:var(--amber);">#${esc(card.serial)}</div>
       </div>`);
 
-      const cvs = tile.querySelector('canvas');
+      const cvs = item.querySelector('canvas');
       renderCapToCanvas(cvs, card);
-
-      tile.addEventListener('click', () => openCardDetailModal(card));
-      grid.appendChild(tile);
+      item.addEventListener('click', () => openCardDetailModal(card));
+      tray.appendChild(item);
     });
 
-    listContainer.replaceChildren(grid);
+    spotlightContainer.replaceChildren(sSec);
   };
 
-  // Fetch cards
-  api.getCards(state.session.wallet.allAddresses).then((res) => {
-    state.cards = res.cards || [];
-    const countEl = $('#caps-count', v);
-    if (countEl) countEl.textContent = state.cards.length;
+  const renderCards = () => {
+    const scopeCards = getScopeCards();
+    renderTierChips();
+    renderSpotlight();
+
+    // Filter
+    let filtered = scopeCards;
+    if (tierFilter !== 'all') {
+      filtered = filtered.filter((c) => (c.tier || 1) === tierFilter);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter((c) => {
+        const idMatch = String(c.card_id).toLowerCase().includes(q);
+        const serialMatch = String(c.serial).toLowerCase().includes(q);
+        const titleMatch = c.title ? c.title.toLowerCase().includes(q) : false;
+        const classMatch = c.traits?.class_name ? c.traits.class_name.toLowerCase().includes(q) : false;
+        const metalMatch = c.traits?.base_metal ? c.traits.base_metal.toLowerCase().includes(q) : false;
+        return idMatch || serialMatch || titleMatch || classMatch || metalMatch;
+      });
+    }
+
+    // Sort
+    filtered = [...filtered].sort((a, b) => {
+      if (sortBy === 'rarest') {
+        return (b.tier || 1) - (a.tier || 1) || (b.serial || 0) - (a.serial || 0);
+      }
+      if (sortBy === 'newest') {
+        return (b.serial || 0) - (a.serial || 0);
+      }
+      return (a.serial || 0) - (b.serial || 0);
+    });
+
+    const totalCards = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalCards / cardsPerPage));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    const paged = showAllUnpaged
+      ? filtered
+      : filtered.slice((currentPage - 1) * cardsPerPage, currentPage * cardsPerPage);
+
+    if (filtered.length === 0) {
+      if (searchQuery.trim()) {
+        listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
+          <p style="margin:4px 0 8px; font-weight:600">No drops match "${esc(searchQuery)}"</p>
+          <p class="muted" style="margin:0 0 12px; font-size:12.5px;">Try clearing search or picking a different rarity tier.</p>
+          <button class="btn small" data-act="clear-search">Clear Search</button>
+        </div>`;
+      } else if (activeScope === 'my') {
+        listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
+          <p style="margin:4px 0 8px; font-weight:600">No bottlecaps in your vault yet!</p>
+          <p class="muted" style="margin:0 0 12px; font-size:12.5px;">Mine BTLCAP blocks on the pool (asicpool.space) to win automatic card drops, or forge your own custom cap.</p>
+          <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+            <button class="btn primary small" data-act="forge-open">Forge Your First Cap (50 BCAP)</button>
+            <button class="btn small" data-act="scope-all">Explore All Wasteland Drops</button>
+          </div>
+        </div>`;
+      } else {
+        listContainer.innerHTML = `<div class="warn" style="margin-top:14px; text-align:center;">
+          <p style="margin:4px 0 8px; font-weight:600">No sidechain drops found for this filter</p>
+          <p class="muted" style="margin:0;">Select a different tier badge above.</p>
+        </div>`;
+      }
+      paginationContainer.innerHTML = '';
+      return;
+    }
+
+    // Render Grid vs Showcase
+    if (viewMode === 'grid') {
+      const grid = el(`<div class="caps-grid"></div>`);
+      paged.forEach((card) => {
+        const tierId = card.tier || 1;
+        const tier = RARITY_TIERS[tierId] || RARITY_TIERS[1];
+        const tile = el(`<div class="cap-tile glow-${tierId}">
+          <div class="cap-canvas-wrap"><canvas width="180" height="180"></canvas></div>
+          <div class="t-badge tier-${tierId}" style="display:inline-block; font-size:10px; margin:2px 0;">${esc(card.traits?.class_name || tier.name)}</div>
+          <div class="cap-title">${esc(card.title || `Card #${card.card_id}`)}</div>
+          <div class="cap-sub">Serial #${esc(card.serial)}</div>
+        </div>`);
+
+        const cvs = tile.querySelector('canvas');
+        renderCapToCanvas(cvs, card);
+        tile.addEventListener('click', () => openCardDetailModal(card));
+        grid.appendChild(tile);
+      });
+      listContainer.replaceChildren(grid);
+    } else {
+      // Showcase View
+      const list = el(`<div class="caps-showcase-list"></div>`);
+      paged.forEach((card) => {
+        const tierId = card.tier || 1;
+        const tier = RARITY_TIERS[tierId] || RARITY_TIERS[1];
+        const item = el(`<div class="cap-showcase-item glow-${tierId}">
+          <div class="cap-showcase-canvas"><canvas width="180" height="180"></canvas></div>
+          <div class="cap-showcase-details">
+            <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px; flex-wrap:wrap;">
+              <span class="t-badge tier-${tierId}" style="font-size:10px;">${esc(tier.name)} (${esc(tier.pct)})</span>
+              <span class="badge" style="font-size:10px;">#${esc(card.serial)}</span>
+              <span class="badge" style="font-size:10px; text-transform:uppercase; color:var(--amber);">${esc(card.traits?.base_metal || 'TIN')}</span>
+            </div>
+            <div class="cap-showcase-title">${esc(card.title || `Card #${card.card_id}`)}</div>
+            <div class="cap-showcase-meta">Seal UTXO: ${card.utxo ? `${esc(card.utxo.slice(0, 18))}…` : 'Active on Sidechain'}</div>
+            <button class="btn small primary" style="margin-top:4px;" data-act="inspect-card">Inspect &amp; Transfer</button>
+          </div>
+        </div>`);
+
+        const cvs = item.querySelector('canvas');
+        renderCapToCanvas(cvs, card);
+        item.addEventListener('click', () => openCardDetailModal(card));
+        list.appendChild(item);
+      });
+      listContainer.replaceChildren(list);
+    }
+
+    // Pagination Footer
+    if (filtered.length > cardsPerPage) {
+      const startIdx = (currentPage - 1) * cardsPerPage + 1;
+      const endIdx = Math.min(currentPage * cardsPerPage, totalCards);
+      const pag = el(`<div class="caps-pagination-bar">
+        <div>
+          Showing ${showAllUnpaged ? `all ${totalCards}` : `${startIdx}–${endIdx} of ${totalCards}`} cards
+        </div>
+        <div class="caps-page-controls">
+          <button class="btn small" data-act="toggle-show-all">
+            ${showAllUnpaged ? 'Paged View (8/pg)' : `Show All (${totalCards})`}
+          </button>
+          ${!showAllUnpaged ? `
+            <button class="caps-page-btn" data-act="page-prev" ${currentPage <= 1 ? 'disabled' : ''}>← Prev</button>
+            <span style="font-weight:700; font-family:monospace; padding:0 4px;">${currentPage} / ${totalPages}</span>
+            <button class="caps-page-btn" data-act="page-next" ${currentPage >= totalPages ? 'disabled' : ''}>Next →</button>
+          ` : ''}
+        </div>
+      </div>`);
+      paginationContainer.replaceChildren(pag);
+    } else {
+      paginationContainer.innerHTML = '';
+    }
+  };
+
+  const fetchCardsData = async () => {
+    isLoading = true;
+    try {
+      const [myRes, allRes] = await Promise.all([
+        api.getCards(state.session.wallet.allAddresses).catch(() => ({ cards: [] })),
+        api.getCards().catch(() => ({ cards: [] }))
+      ]);
+      state.cards = myRes.cards || [];
+      state.allCards = allRes.cards || [];
+
+      const countEl = $('#caps-count', v);
+      if (countEl) countEl.textContent = state.cards.length;
+      const allCountEl = $('#all-caps-count', v);
+      if (allCountEl) allCountEl.textContent = state.allCards.length;
+      const myScopeEl = $('#scope-my-count', v);
+      if (myScopeEl) myScopeEl.textContent = state.cards.length;
+      const allScopeEl = $('#scope-all-count', v);
+      if (allScopeEl) allScopeEl.textContent = state.allCards.length;
+    } finally {
+      isLoading = false;
+      renderCards();
+    }
+  };
+
+  // Event handlers
+  searchInput.addEventListener('input', (e) => {
+    searchQuery = e.target.value;
+    currentPage = 1;
     renderCards();
-  }).catch(() => {
+  });
+
+  sortSelect.addEventListener('change', (e) => {
+    sortBy = e.target.value;
+    currentPage = 1;
     renderCards();
   });
 
   v.addEventListener('click', (e) => {
-    if (e.target.dataset.act === 'forge-open') {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    const tierBtn = e.target.closest('[data-tier]');
+
+    if (tierBtn) {
+      const t = tierBtn.dataset.tier;
+      tierFilter = t === 'all' ? 'all' : Number(t);
+      currentPage = 1;
+      renderCards();
+      return;
+    }
+
+    if (act === 'scope-my') {
+      activeScope = 'my';
+      currentPage = 1;
+      $('.scope-btn[data-act="scope-my"]', v)?.classList.add('active');
+      $('.scope-btn[data-act="scope-all"]', v)?.classList.remove('active');
+      renderCards();
+    } else if (act === 'scope-all') {
+      activeScope = 'all';
+      currentPage = 1;
+      $('.scope-btn[data-act="scope-all"]', v)?.classList.add('active');
+      $('.scope-btn[data-act="scope-my"]', v)?.classList.remove('active');
+      renderCards();
+    } else if (act === 'view-grid') {
+      viewMode = 'grid';
+      $('.view-btn[data-act="view-grid"]', v)?.classList.add('active');
+      $('.view-btn[data-act="view-showcase"]', v)?.classList.remove('active');
+      renderCards();
+    } else if (act === 'view-showcase') {
+      viewMode = 'showcase';
+      $('.view-btn[data-act="view-showcase"]', v)?.classList.add('active');
+      $('.view-btn[data-act="view-grid"]', v)?.classList.remove('active');
+      renderCards();
+    } else if (act === 'caps-refresh') {
+      fetchCardsData();
+    } else if (act === 'forge-open') {
       openForgeStudioModal();
+    } else if (act === 'clear-search') {
+      searchQuery = '';
+      searchInput.value = '';
+      currentPage = 1;
+      renderCards();
+    } else if (act === 'toggle-show-all') {
+      showAllUnpaged = !showAllUnpaged;
+      renderCards();
+    } else if (act === 'page-prev') {
+      currentPage = Math.max(1, currentPage - 1);
+      renderCards();
+    } else if (act === 'page-next') {
+      currentPage++;
+      renderCards();
     }
   });
+
+  // Initial load
+  fetchCardsData();
 
   return v;
 }
