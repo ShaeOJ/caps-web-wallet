@@ -95,6 +95,7 @@ export function buildListingProofTx({
 
   const spendable = utxos
     .map((u) => ({ ...u, sats: u.sats || capsToSats(u.amount) }))
+    .filter((u) => u.sats > CARD_SEAL_DUST_SATS)
     .sort((a, b) => (a.sats < b.sats ? 1 : -1));
 
   const chosen = [];
@@ -149,7 +150,7 @@ export function buildListingProofTx({
   }
   tx.finalize();
 
-  return { hex: tx.hex, txid: tx.id, feeSats: fee };
+  return { hex: tx.hex, txid: tx.id, feeSats: fee, spentUtxos: chosen, changeSats: change };
 }
 
 /**
@@ -261,9 +262,10 @@ export function fulfillOrderSlip({
   const feeRate = BigInt(Math.max(1, Math.ceil(feeRateSatPerVB)));
   const targetFunds = priceSats + CARD_SEAL_DUST_SATS; // Price + 1000 sats seal
 
-  // Select buyer UTXOs to fund the purchase
+  // Select buyer UTXOs to fund the purchase (protecting card dust seals)
   const spendable = buyerUtxos
     .map((u) => ({ ...u, sats: u.sats || capsToSats(u.amount) }))
+    .filter((u) => u.sats > CARD_SEAL_DUST_SATS)
     .sort((a, b) => (a.sats < b.sats ? 1 : -1));
 
   const chosenBuyerUtxos = [];

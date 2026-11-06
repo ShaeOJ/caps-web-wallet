@@ -753,25 +753,10 @@ function openListCardModal(card) {
       btn.textContent = 'Burning 100 BCAP Listing Fee…';
 
       try {
-        toast('1/3: Building on-chain 100 BCAP listing fee…');
-        const changeAddr = currentReceiveAddr();
-        const sellerAddress = changeAddr;
+        if (!card.utxo || card.utxo.startsWith('auxpow:') || !card.utxo.includes(':')) {
+          throw new Error('This card is an AuxPoW sidechain card or has an invalid UTXO seal. Only mainnet-forged cards can be listed on the Trading Post.');
+        }
 
-        const listTxData = market.buildListingProofTx({
-          wallet: state.session.wallet,
-          utxos: state.utxos,
-          cardId: card.card_id,
-          serial: card.serial,
-          priceCaps: priceVal,
-          changeAddress: changeAddr,
-          feeRateSatPerVB: 10,
-        });
-
-        toast('2/3: Broadcasting listing proof to network…');
-        const listBroadcast = await api.broadcast(listTxData.hex);
-
-        btn.textContent = 'Signing atomic swap order…';
-        toast('3/3: Signing atomic order slip…');
         const [cardTxid, cardVoutStr] = card.utxo.split(':');
         const cardVout = parseInt(cardVoutStr, 10);
         const cardUtxoEntry = state.utxos.find((u) => u.txid === cardTxid && u.vout === cardVout);
@@ -783,6 +768,12 @@ function openListCardModal(card) {
           throw new Error(`Private key not found for card address ${cardUtxoEntry.address}`);
         }
 
+        const changeAddr = currentReceiveAddr();
+        const sellerAddress = changeAddr;
+
+        // 1. Sign atomic order slip FIRST (guarantees key validity before any fee is burned)
+        btn.textContent = 'Signing atomic swap order…';
+        toast('1/3: Signing atomic order slip…');
         const orderSlip = market.buildOrderSlip({
           cardUtxo: { txid: cardTxid, vout: cardVout, amountSats: market.CARD_SEAL_DUST_SATS },
           cardKey,
@@ -791,6 +782,40 @@ function openListCardModal(card) {
           net: state.session.wallet.net,
         });
 
+        // 2. Build on-chain 100 BCAP listing fee proof transaction
+        btn.textContent = 'Burning 100 BCAP Listing Fee…';
+        toast('2/3: Burning 100 BCAP listing fee…');
+        const listTxData = market.buildListingProofTx({
+          wallet: state.session.wallet,
+          utxos: state.utxos,
+          cardId: card.card_id,
+          serial: card.serial,
+          priceCaps: priceVal,
+          changeAddress: changeAddr,
+          feeRateSatPerVB: 10,
+        });
+
+        const listBroadcast = await api.broadcast(listTxData.hex);
+
+        // Optimistically clean spent inputs from local UTXO set to prevent mempool conflict
+        if (listTxData.spentUtxos) {
+          const spentSet = new Set(listTxData.spentUtxos.map((u) => `${u.txid}:${u.vout}`));
+          state.utxos = state.utxos.filter((u) => !spentSet.has(`${u.txid}:${u.vout}`));
+        }
+        if (listTxData.changeSats && listTxData.changeSats > 0n) {
+          state.utxos.push({
+            txid: listBroadcast.txid,
+            vout: 1,
+            amount: Number(listTxData.changeSats) / 1e8,
+            sats: listTxData.changeSats,
+            height: 0,
+            address: changeAddr,
+          });
+        }
+
+        // 3. Publish order to Wasteland Trading Post relay
+        btn.textContent = 'Publishing order…';
+        toast('3/3: Publishing order to Wasteland Trading Post…');
         await api.postMarketOrder({
           card_id: card.card_id,
           serial: card.serial,
@@ -812,6 +837,7 @@ function openListCardModal(card) {
         toast(err.message, 'err');
         btn.disabled = false;
         btn.textContent = 'Confirm & List Card';
+        refresh();
       }
     }
   });
@@ -1404,6 +1430,12 @@ function openCardDetailModal(card) {
   const tier = RARITY_TIERS[tierId] || RARITY_TIERS[1];
   const traits = card.traits || {};
 
+  const userAddrs = state.session?.wallet?.allAddresses || [];
+  const isMine = userAddrs.some(
+    (a) => a.toLowerCase() === (card.owner || '').toLowerCase() || a.toLowerCase() === (card.mainnet_owner || '').toLowerCase()
+  );
+  const isAuxpow = !card.utxo || card.utxo.startsWith('auxpow:') || !card.utxo.includes(':');
+
   const overlay = el(`<div class="cap-modal-overlay">
     <div class="cap-modal">
       <button class="modal-close" data-act="close">&times;</button>
@@ -1432,16 +1464,27 @@ function openCardDetailModal(card) {
         <div style="font-size:10.5px">${esc(card.recipe_hash || 'N/A')}</div>
       </div>
 
-      <div class="review" style="margin-top:14px">
-        <div class="field">
-          <label>Transfer to Wasteland Address</label>
-          <input type="text" id="transfer-to" placeholder="btlcap1... or B...">
+      ${!isMine ? `
+        <div class="muted" style="margin-top:14px; text-align:center; font-size:12px; padding:10px; background:var(--surface2); border-radius:8px;">
+          Owned by <b style="font-family:monospace; color:var(--amber); word-break:break-all;">${esc(card.mainnet_owner || card.owner || 'Unknown')}</b>
         </div>
-        <div class="row" style="margin-top:10px; gap:8px;">
-          <button class="btn" style="flex:1" data-act="transfer-send">Transfer Card</button>
-          <button class="btn primary" style="flex:1" data-act="open-list-modal">🏷️ List for Sale</button>
+      ` : isAuxpow ? `
+        <div class="warn" style="margin-top:14px; text-align:center; font-size:12px; padding:10px; border-radius:8px;">
+          ⛏️ <b>Mined via AuxPoW Sidechain</b>
+          <div class="muted" style="margin-top:4px; font-size:11px;">Mined sidechain caps are indexed on the AuxPoW ledger. On-chain P2P single-use seal transfers and Trading Post listings are available for forged mainnet caps.</div>
         </div>
-      </div>
+      ` : `
+        <div class="review" style="margin-top:14px">
+          <div class="field">
+            <label>Transfer to Wasteland Address</label>
+            <input type="text" id="transfer-to" placeholder="btlcap1... or B...">
+          </div>
+          <div class="row" style="margin-top:10px; gap:8px;">
+            <button class="btn" style="flex:1" data-act="transfer-send">Transfer Card</button>
+            <button class="btn primary" style="flex:1" data-act="open-list-modal">🏷️ List for Sale</button>
+          </div>
+        </div>
+      `}
     </div>
   </div>`);
 
@@ -1480,6 +1523,7 @@ function openCardDetailModal(card) {
         refresh();
       } catch (err) {
         toast(err.message, 'err');
+        refresh();
       }
     }
   });
@@ -1993,6 +2037,23 @@ function openForgeStudioModal() {
 
         toast('Broadcasting custom forge to chain…');
         const res = await api.broadcast(txData.hex);
+
+        // Optimistically clean spent inputs from local UTXO set to prevent mempool conflict
+        if (txData.spentUtxos) {
+          const spentSet = new Set(txData.spentUtxos.map((u) => `${u.txid}:${u.vout}`));
+          state.utxos = state.utxos.filter((u) => !spentSet.has(`${u.txid}:${u.vout}`));
+        }
+        if (txData.changeSats && txData.changeSats > 0n) {
+          state.utxos.push({
+            txid: res.txid,
+            vout: 2,
+            amount: Number(txData.changeSats) / 1e8,
+            sats: txData.changeSats,
+            height: 0,
+            address: changeAddr,
+          });
+        }
+
         toast('Custom Cap Forged! Tx: ' + res.txid.slice(0, 12) + '... (50 BCAP burned)', 'ok');
         const optimisticCard = {
           card_id: Date.now(),
@@ -2013,6 +2074,7 @@ function openForgeStudioModal() {
         refresh();
       } catch (err) {
         toast(err.message, 'err');
+        refresh();
       }
     }
   });

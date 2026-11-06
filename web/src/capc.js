@@ -243,6 +243,8 @@ export function buildForgeCapTx({
     change,
     recipeHash: hashHex,
     creatorAddress,
-    recipe
+    recipe,
+    spentUtxos: chosen,
+    changeSats: change
   };
 }
