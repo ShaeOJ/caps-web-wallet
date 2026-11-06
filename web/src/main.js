@@ -1898,6 +1898,7 @@ function openForgeStudioModal() {
 
   // Image Upload & Filters
   overlay.querySelector('#fg-btn-upload').addEventListener('click', () => {
+    fileInput.value = '';
     fileInput.click();
   });
 

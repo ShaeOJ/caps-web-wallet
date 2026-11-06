@@ -336,14 +336,16 @@ function drawCustomStrokes(ctx, cx, cy, rad, strokes) {
 
 export function processImageToCircle(src, filter, callback) {
   const img = new Image();
-  img.src = src;
   img.onload = () => {
     const size = 256;
     const off = document.createElement('canvas');
     off.width = size;
     off.height = size;
     const ctx = off.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      callback(src);
+      return;
+    }
 
     // Center crop to square
     const aspect = img.width / img.height;
@@ -380,6 +382,20 @@ export function processImageToCircle(src, filter, callback) {
       ctx.putImageData(imgData, 0, 0);
     }
 
-    callback(off.toDataURL('image/png'));
+    try {
+      callback(off.toDataURL('image/png'));
+    } catch {
+      callback(src);
+    }
   };
+  img.onerror = (err) => {
+    console.error('Image processing failed, using raw source:', err);
+    callback(src);
+  };
+  img.src = src;
+  if (img.complete && img.naturalWidth !== 0) {
+    try {
+      img.onload();
+    } catch {}
+  }
 }
