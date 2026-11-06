@@ -1315,12 +1315,19 @@ func (s *server) handleCards(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSaveRecipe(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		RecipeHash string         `json:"recipe_hash"`
-		Recipe     map[string]any `json:"recipe"`
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if err != nil {
+		log.Printf("[RECIPE] Read error: %v", err)
+		writeErr(w, http.StatusBadRequest, "failed to read body: "+err.Error())
+		return
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 512<<10)).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+	var body struct {
+		RecipeHash string `json:"recipe_hash"`
+		Recipe     any    `json:"recipe"`
+	}
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		log.Printf("[RECIPE] Unmarshal error: %v (len %d)", err, len(rawBody))
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
 	hash := strings.ToLower(strings.TrimSpace(body.RecipeHash))
@@ -1368,8 +1375,8 @@ var marketMu sync.RWMutex
 
 type MarketOrder struct {
 	OrderID       string         `json:"order_id"`
-	CardID        int64          `json:"card_id"`
-	Serial        int64          `json:"serial"`
+	CardID        any            `json:"card_id"`
+	Serial        any            `json:"serial"`
 	Tier          int            `json:"tier"`
 	Title         string         `json:"title"`
 	RecipeHash    string         `json:"recipe_hash,omitempty"`
@@ -1481,9 +1488,16 @@ func (s *server) handleGetMarketOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlePostMarketOrder(w http.ResponseWriter, r *http.Request) {
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if err != nil {
+		log.Printf("[MARKET] Read error: %v", err)
+		writeErr(w, http.StatusBadRequest, "failed to read body: "+err.Error())
+		return
+	}
 	var body MarketOrder
-	if err := json.NewDecoder(io.LimitReader(r.Body, 128<<10)).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		log.Printf("[MARKET] Unmarshal error: %v (len %d)", err, len(rawBody))
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
 
